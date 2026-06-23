@@ -43,7 +43,7 @@ def wczytaj_historie():
     if os.path.exists(PLIK_KONFIGURACJI):
         with open(PLIK_KONFIGURACJI, 'r', encoding='utf-8') as f:
             return json.load(f)
-    return {"przetworzone_id": []}
+    return {"przetworzone_id": [], "ukonczone_kombinacje": []}
 
 def zapisz_historie(konfiguracja):
     with open(PLIK_KONFIGURACJI, 'w', encoding='utf-8') as f:
@@ -79,15 +79,15 @@ def dopisz_do_worda(sygnatura, data_str, typ_podatku, znaleziona_fraza, link, te
     doc.add_page_break() 
     doc.save(PLIK_RAPORTU)
 
-# --- 4. ZAAWANSOWANE FUNKCJE API (DELEGACJA NA SERWERY MF) ---
-def szukaj_w_api_mf(data_start_str, data_koniec_str, fraza, sesja, wybrane_kody):
-    """Zleca wyszukiwanie pełnej frazy serwerom Ministerstwa Finansów"""
+# --- 4. ZAAWANSOWANE FUNKCJE API (WYSZUKIWANIE SEKWENCYJNE) ---
+def szukaj_w_api_mf_strikt(data_start_str, data_koniec_str, fraza, sesja, nazwa_podatku, kod_sygnatury):
+    """Przeszukuje bazę pod kątem jednego słowa i jednego konkretnego podatku"""
     payload = {
         "query": fraza,
         "filter": {"KATEGORIA_INFORMACJI": [1], "DT_WYD_start": data_start_str, "DT_WYD_end": data_koniec_str},
         "columns": ["SYG", "ID_INFORMACJI", "DT_WYD"],
-        "searchInFullPhrase": True, # BEZWZGLĘDNY KLUCZ DO PRĘDKOŚCI
-        "searchInContent": True,    # Przeszukuje PDF po stronie MF
+        "searchInFullPhrase": True, 
+        "searchInContent": True,    
         "searchInSynonyms": False,
         "warunkiDodatkowe": []
     }
@@ -111,23 +111,17 @@ def szukaj_w_api_mf(data_start_str, data_koniec_str, fraza, sesja, wybrane_kody)
                     sygnatura = str(d.get('SYG', '')).upper()
                     data_wydania = str(d.get('DT_WYD', '')).split('T')[0]
                     
-                    pasujacy_podatek = None
-                    for nazwa_podatku, kod_sygnatury in wybrane_kody.items():
-                        if kod_sygnatury in sygnatura:
-                            pasujacy_podatek = nazwa_podatku
-                            break
-                            
-                    if pasujacy_podatek:
+                    # Ścisłe sprawdzanie czy dana interpretacja to szukany typ podatku
+                    if kod_sygnatury in sygnatura:
                         doc_id = str(d.get('id') or d.get('ID_INFORMACJI'))
                         if doc_id:
-                            dokumenty_podatkowe.append({"id": doc_id, "sygnatura": sygnatura, "typ": pasujacy_podatek, "data": data_wydania})
+                            dokumenty_podatkowe.append({"id": doc_id, "sygnatura": sygnatura, "typ": nazwa_podatku, "data": data_wydania})
                 return dokumenty_podatkowe
         except:
             time.sleep(2)
     return []
 
 def pobierz_tylko_tekst(id_dokumentu):
-    """Pobiera PDF tylko i wyłącznie wtedy, gdy wiemy na 100%, że to trafienie"""
     url = PDF_API_URL.format(id=id_dokumentu)
     headers_pdf = {"User-Agent": "Mozilla/5.0", "Referer": "https://eureka.mf.gov.pl/"}
     
@@ -154,18 +148,19 @@ st.sidebar.title("📌 Menu PickPivot")
 st.sidebar.markdown("---")
 aktywna_zakladka = st.sidebar.radio("Wybierz moduł platformy:", ["1", "2", "3", "4", "5", "6"])
 st.sidebar.markdown("---")
-st.sidebar.caption("© 2026 PickPivot v4.0 (Ultra-Fast API)")
+st.sidebar.caption("© 2026 PickPivot v4.1 (Precyzyjne Logowanie)")
 
 # --- 6. LOGIKA WYŚWIETLANIA GŁÓWNEGO EKRANU ---
 if aktywna_zakladka == "1":
     st.title("⚡ PickPivot: Niezawodny Radar Orzecznictwa")
-    st.markdown("Wersja zoptymalizowana. Deleguje wyszukiwanie do serwerów MF, pobierając pliki tylko przy trafieniu i budując dokument iteracyjnie (krok po kroku).")
+    st.markdown("Wersja sekwencyjna. Skanuje bazę słowo po słowie, podatek po podatku, informując dokładnie o bieżącym etapie pracy.")
 
     konfiguracja = wczytaj_historie()
     przetworzone_id = set(konfiguracja.get("przetworzone_id", []))
+    ukonczone_kombinacje = set(konfiguracja.get("ukonczone_kombinacje", []))
 
     if os.path.exists(PLIK_RAPORTU):
-        st.success(f"💾 PAMIĘĆ AKTYWNA: Skrypt zapamiętał {len(przetworzone_id)} znalezionych już dokumentów.")
+        st.success(f"💾 PAMIĘĆ AKTYWNA: Skrypt zapamiętał {len(przetworzone_id)} pobranych już dokumentów.")
         colA, colB = st.columns(2)
         with colA:
             with open(PLIK_RAPORTU, "rb") as f:
@@ -196,14 +191,15 @@ if aktywna_zakladka == "1":
             st.error("Proszę wybrać co najmniej jeden rok, jeden miesiąc oraz rodzaj podatku.")
             st.stop()
 
-        aktywne_kody = {p: KODY_PODATKOW[p] for p in wybrane_podatki_ui}
-        
+        dzisiaj = date.today()
         pasek_postepu = st.progress(0)
         status_tekst = st.empty()
         okno_logow = st.container()
         
         licznik_trafien = 0
-        calkowita_liczba_zapytan = len(wybrane_lata) * len(wybrane_miesiace) * len(FRAZY_KLUCZOWE)
+        
+        # Obliczanie łącznej liczby kroków do wykonania pętli
+        calkowita_liczba_zapytan = len(wybrane_lata) * len(wybrane_miesiace) * len(FRAZY_KLUCZOWE) * len(wybrane_podatki_ui)
         zapytania_wykonane = 0
 
         with requests.Session() as sesja_bazy:
@@ -213,39 +209,53 @@ if aktywna_zakladka == "1":
                     data_start_str = f"{rok}-{miesiac:02d}-01"
                     data_koniec_str = f"{rok}-{miesiac:02d}-{ost_dzien:02d}"
                     
+                    # GŁÓWNA ZMIANA: Słowo kluczowe na początku pętli operacyjnej
                     for fraza in FRAZY_KLUCZOWE:
-                        status_tekst.info(f"Pytam serwery MF o: '{fraza}' w {miesiac:02d}/{rok}...")
-                        
-                        lista_trafien = szukaj_w_api_mf(data_start_str, data_koniec_str, fraza, sesja_bazy, aktywne_kody)
-                        
-                        for dok in lista_trafien:
-                            doc_id = dok["id"]
+                        for podatek in wybrane_podatki_ui:
                             
-                            # Dzięki temu nie dodamy dwa razy tego samego dokumentu, jeśli ma dwa słowa kluczowe
-                            if doc_id in przetworzone_id:
+                            # Generowanie unikalnego klucza dla pamięci podręcznej (np. "2026_5_przyłącze_VAT")
+                            klucz_kombinacji = f"{rok}_{miesiac}_{fraza}_{podatek}"
+                            
+                            if klucz_kombinacji in ukonczone_kombinacje:
+                                zapytania_wykonane += 1
                                 continue
-                                
-                            status_tekst.warning(f"Znalazłem trafienie ({dok['sygnatura']})! Pobieram treść do Worda...")
-                            tekst_dokumentu = pobierz_tylko_tekst(doc_id)
                             
-                            if tekst_dokumentu:
-                                link = PODGLAD_URL.format(id=doc_id)
-                                dopisz_do_worda(dok["sygnatura"], dok["data"], dok["typ"], fraza, link, tekst_dokumentu)
+                            # PRECYZYJNY STATUS NA ŻYWO NA EKRANIE
+                            status_tekst.info(f"🔍 [{miesiac:02d}/{rok}] Wyszukuję: '{fraza}' w podatku {podatek}...")
+                            
+                            lista_trafien = szukaj_w_api_mf_strikt(data_start_str, data_koniec_str, fraza, sesja_bazy, podatek, KODY_PODATKOW[podatek])
+                            
+                            for dok in lista_trafien:
+                                doc_id = dok["id"]
                                 
-                                przetworzone_id.add(doc_id)
-                                konfiguracja["przetworzone_id"].append(doc_id)
-                                zapisz_historie(konfiguracja)
-                                licznik_trafien += 1
+                                if doc_id in przetworzone_id:
+                                    continue
+                                    
+                                status_tekst.warning(f"⏳ Pobieranie treści do raportu Word: {dok['sygnatura']}...")
+                                tekst_dokumentu = pobierz_tylko_tekst(doc_id)
                                 
-                                with okno_logow:
-                                    st.success(f"Dodano treść do pliku Word! ({fraza}) -> {dok['typ']}: {dok['sygnatura']}")
-                        
-                        zapytania_wykonane += 1
-                        postep = min(1.0, zapytania_wykonane / calkowita_liczba_zapytan)
-                        pasek_postepu.progress(postep)
-                        time.sleep(random.uniform(0.2, 0.6))
+                                if tekst_dokumentu:
+                                    link = PODGLAD_URL.format(id=doc_id)
+                                    dopisz_do_worda(dok["sygnatura"], dok["data"], dok["typ"], fraza, link, tekst_dokumentu)
+                                    
+                                    przetworzone_id.add(doc_id)
+                                    konfiguracja["przetworzone_id"].append(doc_id)
+                                    licznik_trafien += 1
+                                    
+                                    with okno_logow:
+                                        st.success(f"Dodano do raportu! [{fraza.upper()}] -> {dok['typ']}: {dok['sygnatura']}")
+                            
+                            # Zapisanie udanego zakończenia tej konkretnej komórki wyszukiwania
+                            ukonczone_kombinacje.add(klucz_kombinacji)
+                            konfiguracja["ukonczone_kombinacje"].append(klucz_kombinacji)
+                            zapisz_historie(konfiguracja)
+                            
+                            zapytania_wykonane += 1
+                            postep = min(1.0, zapytania_wykonane / calkowita_liczba_zapytan)
+                            pasek_postepu.progress(postep)
+                            time.sleep(random.uniform(0.1, 0.4))
 
-        status_tekst.success(f"Zakończono ultra-szybkie skanowanie! W tej sesji pobrano i doklejono {licznik_trafien} trafnych interpretacji.")
+        status_tekst.success(f"Zakończono sekwencyjne skanowanie! W tej sesji dopisano {licznik_trafien} nowych interpretacji.")
         pasek_postepu.progress(1.0)
         time.sleep(2)
         st.rerun()
