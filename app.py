@@ -8,6 +8,7 @@ import calendar
 import json
 import os
 import re
+import pandas as pd
 from datetime import datetime, date
 from docx import Document
 
@@ -23,11 +24,17 @@ SEARCH_API_URL = "https://eureka.mf.gov.pl/api/public/v1/wyszukiwarka/informacje
 PDF_API_URL = "https://eureka.mf.gov.pl/api/public/v1/informacje/{id}/eksport/pdf"
 PODGLAD_URL = "https://eureka.mf.gov.pl/informacje/podglad/{id}"
 
+# Zoptymalizowane rdzenie słów (stemy) - eliminują problem odmiany przez przypadki w języku polskim
 FRAZY_KLUCZOWE = [
-    "sieć ciepłownicza", "przebudowa sieci", "przyłącze", "węzeł cieplny", 
-    "taryfa dla ciepła", "wodociąg", "sieć wodociągowa", "kanalizacja", 
-    "sieć kanalizacyjna", "oczyszczalnia ścieków", "stacja uzdatniania wody", 
-    "spółka komunalna"
+    "ciepłownicz",   # sieć ciepłownicza, sieci ciepłowniczych, ciepłownictwu
+    "przyłącz",      # przyłącze, przyłącza, przyłączy, przyłączeniem
+    "węzeł ciepl",   # węzeł cieplny, węzła cieplnego, węzłom cieplnym
+    "taryf",         # taryfa dla ciepła, taryfy, taryfami
+    "wodociąg",      # wodociąg, wodociągowa, wodociągów, wodociągowym
+    "kanalizac",     # kanalizacja, kanalizacyjna, kanalizacyjnych
+    "ściek",         # oczyszczalnia ścieków, ściekami, ściekowe
+    "uzdatnian",     # stacja uzdatniania wody, uzdatnianiu
+    "komunaln"       # spółka komunalna, spółki komunalnej, komunalnych
 ]
 
 KODY_PODATKOW = {
@@ -39,7 +46,7 @@ KODY_PODATKOW = {
 if not os.path.exists(FOLDER_DOCELOWY):
     os.makedirs(FOLDER_DOCELOWY)
 
-# --- 3. LEKKA I SZYBKA PAMIĘĆ CACHE (JSON TEXT) ---
+# --- 3. PAMIĘĆ CACHE I UTILS ---
 def wczytaj_historie():
     if os.path.exists(PLIK_KONFIGURACJI):
         with open(PLIK_KONFIGURACJI, 'r', encoding='utf-8') as f:
@@ -70,7 +77,7 @@ def wyczysc_tekst_dla_worda(tekst):
     if not tekst: return ""
     return re.sub(r'[^\x09\x0A\x0D\x20-\x7E\x85\xA0-\uD7FF\uE000-\uFFFD\u10000-\u10FFFF]', '', tekst)
 
-# --- 4. ZOPTYMALIZOWANE SKANOWANIE I EKSTRAKCJA TEKSTU ---
+# --- 4. FUNKCJE API ---
 def szukaj_w_api_mf_strikt(data_start_str, data_koniec_str, fraza, sesja, nazwa_podatku, kod_sygnatury):
     payload = {
         "query": fraza,
@@ -111,7 +118,6 @@ def szukaj_w_api_mf_strikt(data_start_str, data_koniec_str, fraza, sesja, nazwa_
     return []
 
 def pobierz_pelny_tekst_pypdf(id_dokumentu):
-    """Szybka ekstrakcja tekstu przy użyciu PyPDF2 zamiast ciężkiego pdfplumber"""
     url = PDF_API_URL.format(id=id_dokumentu)
     headers_pdf = {"User-Agent": "Mozilla/5.0", "Referer": "https://eureka.mf.gov.pl/"}
     
@@ -140,12 +146,12 @@ st.sidebar.title("📌 Menu PickPivot")
 st.sidebar.markdown("---")
 aktywna_zakladka = st.sidebar.radio("Wybierz moduł platformy:", ["1", "2", "3", "4", "5", "6"])
 st.sidebar.markdown("---")
-st.sidebar.caption("© 2026 PickPivot v5.0 (Maksymalna Prędkość)")
+st.sidebar.caption("© 2026 PickPivot v5.1")
 
-# --- 6. LOGIKA WYŚWIETLANIA GŁÓWNEGO EKRANU ---
+# --- 6. GŁÓWNY EKRAN ---
 if aktywna_zakladka == "1":
     st.title("⚡ PickPivot: Niezawodny Radar Orzecznictwa")
-    st.markdown("Wersja zoptymalizowana pod kątem prędkości. Zapisuje dane w lekkim formacie tekstowym, a pełny plik Word buduje dopiero w momencie pobierania.")
+    st.markdown("Wersja lingwistyczna. Wykorzystuje zaawansowane wyszukiwanie rdzeni słów w celu maksymalizacji liczby trafień.")
 
     konfiguracja = wczytaj_historie()
     przetworzone_id = set(konfiguracja.get("przetworzone_id", []))
@@ -153,12 +159,11 @@ if aktywna_zakladka == "1":
     pelne_tresci_cache = wczytaj_pelne_tresci()
 
     if pelne_tresci_cache:
-        st.success(f"💾 BAZA DANYCH: W pamięci podręcznej zabezpieczono {len(pelne_tresci_cache)} interpretacji o pełnej treści.")
+        st.success(f"💾 BAZA DANYCH: W bazie zabezpieczono {len(pelne_tresci_cache)} unikalnych orzeczeń o pełnej treści.")
         colA, colB = st.columns(2)
         with colA:
-            # Szybkie budowanie dokumentu Word JEDNORAZOWO w pamięci RAM na żądanie
             if st.button("📄 GENERUJ I POBIERZ RAPORT WORD (.docx)", use_container_width=True, type="primary"):
-                with st.spinner("Trwa błyskawiczne kompilowanie dokumentu Word..."):
+                with st.spinner("Trwa kompilowanie raportu tekstowego..."):
                     doc = Document()
                     doc.add_heading('Baza Orzecznictwa PickPivot', 0)
                     
@@ -166,7 +171,12 @@ if aktywna_zakladka == "1":
                         doc.add_heading(f"Sygnatura: {rekord['Sygnatura']}", level=1)
                         doc.add_paragraph(f"Data wydania: {rekord['Data']}")
                         doc.add_paragraph(f"Podatek: {rekord['Podatek']}")
-                        doc.add_paragraph(f"Znalazłem frazę: {rekord['Słowo kluczowe']}")
+                        
+                        # ZMIANA 1: Wyraźne wpisanie słowa kluczowego do podsumowania dokumentu Word
+                        p_fraza = doc.add_paragraph()
+                        p_fraza.add_run("Dopasowane słowo kluczowe: ").bold = True
+                        p_fraza.add_run(f"{rekord['Słowo kluczowe']}")
+                        
                         doc.add_paragraph(f"Link źródłowy: {rekord['Link']}")
                         doc.add_heading("Pełna treść interpretacji:", level=2)
                         
@@ -201,7 +211,7 @@ if aktywna_zakladka == "1":
 
     if st.button("🚀 Uruchom błyskawiczne skanowanie API", use_container_width=True):
         if not wybrane_lata or not wybrane_miesiace or not wybrane_podatki_ui:
-            st.error("Proszę wybrać zestaw parametrów.")
+            st.error("Proszę wybrać komplet parametrów.")
             st.stop()
 
         dzisiaj = date.today()
@@ -212,6 +222,9 @@ if aktywna_zakladka == "1":
         licznik_trafien = 0
         calkowita_liczba_zapytan = len(wybrane_lata) * len(wybrane_miesiace) * len(FRAZY_KLUCZOWE) * len(wybrane_podatki_ui)
         zapytania_wykonane = 0
+
+        # Słownik do zbierania statystyk na żywo
+        raport_statystyk = {f: 0 for f in FRAZY_KLUCZOWE}
 
         with requests.Session() as sesja_bazy:
             for rok in wybrane_lata:
@@ -228,11 +241,10 @@ if aktywna_zakladka == "1":
                                 zapytania_wykonane += 1
                                 continue
                             
-                            status_tekst.info(f"🔍 [{miesiac:02d}/{rok}] Wyszukuję: '{fraza}' w podatku {podatek}...")
+                            status_tekst.info(f"🔍 [{miesiac:02d}/{rok}] Wyszukuję rdzeń: '{fraza}' w podatku {podatek}...")
                             lista_trafien = szukaj_w_api_mf_strikt(data_start_str, data_koniec_str, fraza, sesja_bazy, podatek, KODY_PODATKOW[podatek])
                             
                             if lista_trafien:
-                                # Wczytujemy aktualny stan pełnych treści z JSON
                                 aktualne_tresci = wczytaj_pelne_tresci()
                                 
                                 for dok in lista_trafien:
@@ -240,16 +252,15 @@ if aktywna_zakladka == "1":
                                     if doc_id in przetworzone_id:
                                         continue
                                         
-                                    status_tekst.warning(f"⏳ Pobieranie pełnej treści: {dok['sygnatura']}...")
+                                    status_tekst.warning(f"⏳ Pobieranie pełnej treści dokumentu: {dok['sygnatura']}...")
                                     tekst_dokumentu = pobierz_pelny_tekst_pypdf(doc_id)
                                     
                                     if tekst_dokumentu:
-                                        # Zapisujemy do ultra-lekkiej struktury słownikowej
                                         nowy_rekord = {
                                             "Data": dok["data"],
                                             "Podatek": dok["typ"],
                                             "Sygnatura": dok["sygnatura"],
-                                            "Słowo kluczowe": fraza.capitalize(),
+                                            "Słowo kluczowe": fraza.upper(),
                                             "Link": PODGLAD_URL.format(id=doc_id),
                                             "Tekst": tekst_dokumentu
                                         }
@@ -257,11 +268,11 @@ if aktywna_zakladka == "1":
                                         przetworzone_id.add(doc_id)
                                         konfiguracja["przetworzone_id"].append(doc_id)
                                         licznik_trafien += 1
+                                        raport_statystyk[fraza] += 1
                                         
                                         with okno_logow:
-                                            st.success(f"Pobrano pomyślnie! [{fraza.upper()}] -> {dok['sygnatura']}")
+                                            st.success(f"Pobrano pomyślnie dla słowa [{fraza.upper()}] -> {dok['sygnatura']}")
                                 
-                                # Szybki i bezpieczny zapis bazy tekstowej na dysk serwera
                                 zapisz_pelne_tresci(aktualne_tresci)
                             
                             ukonczone_kombinacje.add(klucz_kombinacji)
@@ -271,13 +282,18 @@ if aktywna_zakladka == "1":
                             zapytania_wykonane += 1
                             postep = min(1.0, zapytania_wykonane / calkowita_liczba_zapytan)
                             pasek_postepu.progress(postep)
-                            
-                            # Bezpieczna, bardzo krótka przerwa dla ochrony przed banem IP
                             time.sleep(random.uniform(0.1, 0.3))
 
-        status_tekst.success(f"Zakończono! Zabezpieczono {licznik_trafien} nowych interpretacji. Kliknij przycisk powyżej, aby stworzyć plik Word.")
-        pasek_postepu.progress(1.0)
-        time.sleep(2)
+        # ZMIANA 2 i 3: Potwierdzenie zakończenia wszystkich prac i prezentacja tabeli statystyk
+        status_tekst.success(f"🎉 WSZYSTKIE WYSZUKIWANIA ZOSTAŁY ZAKOŃCZONE SUKCESEM! Dodano {licznik_trafien} nowych interpretacji.")
+        st.balloons()
+        
+        # Wizualna tabela podsumowania wykonanej pracy
+        st.markdown("### 📊 Końcowe podsumowanie trafień per fraza:")
+        df_stats = pd.DataFrame(list(raport_statystyk.items()), columns=["Przeszukany rdzeń słowa", "Liczba nowych trafień"])
+        st.dataframe(df_stats, use_container_width=True)
+        
+        time.sleep(5)
         st.rerun()
 
 else:
