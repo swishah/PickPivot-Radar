@@ -28,7 +28,8 @@ PLIK_REKORDOW_M1 = f"{FOLDER_DOCELOWY}/baza_tresci_m1.json"
 PLIK_KONFIGURACJI_M2 = f"{FOLDER_DOCELOWY}/historia_m2.json"
 PLIK_REKORDOW_M2 = f"{FOLDER_DOCELOWY}/baza_tresci_m2.json"
 
-SEARCH_API_URL = "https://eureka.mf.gov.pl/api/public/v1/wyszukiwarka/informacje/?size=100&page=0&sort=parametryPozycjonowania%2Casc"
+# BAZOWY ADRES URL Z PAGINACJĄ (Pobieranie stron)
+SEARCH_API_URL_BASE = "https://eureka.mf.gov.pl/api/public/v1/wyszukiwarka/informacje/?size=100&page={page}&sort=parametryPozycjonowania%2Casc"
 PDF_API_URL = "https://eureka.mf.gov.pl/api/public/v1/informacje/{id}/eksport/pdf"
 PODGLAD_URL = "https://eureka.mf.gov.pl/informacje/podglad/{id}"
 
@@ -92,86 +93,113 @@ def pobierz_tekst_pdf(id_dokumentu):
         return None
     return None
 
-# --- 4. FUNKCJE API (MODUŁ 1: RADAR) ---
+# --- 4. FUNKCJE API Z PAGINACJĄ (BEZ LIMITU 100 WYNIKÓW) ---
 def szukaj_w_api_mf(data_start_str, data_koniec_str, fraza, sesja, nazwa_podatku, kod_sygnatury):
-    payload = {
-        "query": fraza,
-        "filter": {"KATEGORIA_INFORMACJI": [1], "DT_WYD_start": data_start_str, "DT_WYD_end": data_koniec_str},
-        "columns": ["SYG", "ID_INFORMACJI", "DT_WYD"],
-        "searchInFullPhrase": False, 
-        "searchInContent": True,     
-        "searchInSynonyms": True,    
-        "warunkiDodatkowe": []
-    }
-    headers = {"User-Agent": "Mozilla/5.0", "Content-Type": "application/json"}
-    try:
-        response = sesja.post(SEARCH_API_URL, json=payload, headers=headers, timeout=12)
-        if response.status_code == 200:
-            dane = response.json()
-            wyniki = dane.get('content') or dane.get('items') or []
-            if not wyniki:
-                for k, v in dane.items():
-                    if isinstance(v, list) and len(v) > 0 and isinstance(v[0], dict):
-                        if 'id' in v[0] or 'ID_INFORMACJI' in v[0]:
-                            wyniki = v
-                            break
-            dokumenty_podatkowe = []
-            for d in wyniki:
-                sygnatura = str(d.get('SYG', '')).upper()
-                data_wydania = str(d.get('DT_WYD', '')).split('T')[0]
-                if kod_sygnatury in sygnatura:
-                    doc_id = str(d.get('id') or d.get('ID_INFORMACJI'))
-                    if doc_id:
-                        dokumenty_podatkowe.append({"id": doc_id, "sygnatura": sygnatura, "typ": nazwa_podatku, "data": data_wydania})
-            return dokumenty_podatkowe, "OK"
-    except requests.exceptions.Timeout:
-        return [], "TIMEOUT"
-    except:
-        return [], "ERROR"
-    return [], "OK"
-
-# --- 5. FUNKCJE API (MODUŁ 2: ŚCIĄGACZ) ---
-def pobierz_wszystko_z_dnia(data_str, sesja, nazwa_podatku, kod_sygnatury):
-    payload = {
-        "filter": {"KATEGORIA_INFORMACJI": [1], "DT_WYD_start": data_str, "DT_WYD_end": data_str},
-        "columns": ["SYG", "ID_INFORMACJI", "DT_WYD"],
-        "searchInFullPhrase": False,
-        "searchInContent": False,
-        "searchInSynonyms": False,
-        "warunkiDodatkowe": []
-    }
-    headers = {"User-Agent": "Mozilla/5.0", "Content-Type": "application/json"}
-    try:
-        response = sesja.post(SEARCH_API_URL, json=payload, headers=headers, timeout=12)
-        if response.status_code == 200:
-            dane = response.json()
-            wyniki = dane.get('content') or dane.get('items') or []
-            if not wyniki:
-                for k, v in dane.items():
-                    if isinstance(v, list) and len(v) > 0 and isinstance(v[0], dict):
-                        if 'id' in v[0] or 'ID_INFORMACJI' in v[0]:
-                            wyniki = v
-                            break
-            dokumenty_podatkowe = []
-            for d in wyniki:
-                sygnatura = str(d.get('SYG', '')).upper()
-                if kod_sygnatury in sygnatura:
-                    doc_id = str(d.get('id') or d.get('ID_INFORMACJI'))
-                    if doc_id:
-                        dokumenty_podatkowe.append({"id": doc_id, "sygnatura": sygnatura, "typ": nazwa_podatku, "data": data_str})
-            return dokumenty_podatkowe, "OK"
-    except requests.exceptions.Timeout:
-        return [], "TIMEOUT"
-    except:
-        return [], "ERROR"
-    return [], "OK"
+    """Zoptymalizowane wyszukiwanie dla Radaru (Moduł 1) - pobiera całe miesiące z obsługą paginacji"""
+    dokumenty_podatkowe = []
+    page = 0
+    
+    while True:
+        url = SEARCH_API_URL_BASE.format(page=page)
+        payload = {
+            "query": fraza,
+            "filter": {"KATEGORIA_INFORMACJI": [1], "DT_WYD_start": data_start_str, "DT_WYD_end": data_koniec_str},
+            "columns": ["SYG", "ID_INFORMACJI", "DT_WYD"],
+            "searchInFullPhrase": False, "searchInContent": True, "searchInSynonyms": True, "warunkiDodatkowe": []
+        }
+        headers = {"User-Agent": "Mozilla/5.0", "Content-Type": "application/json"}
+        
+        try:
+            response = sesja.post(url, json=payload, headers=headers, timeout=12)
+            if response.status_code == 200:
+                dane = response.json()
+                wyniki = dane.get('content') or dane.get('items') or []
+                
+                # Jeśli serwer przesłał puste wyniki w innej strukturze
+                if not wyniki:
+                    for k, v in dane.items():
+                        if isinstance(v, list) and len(v) > 0 and isinstance(v[0], dict):
+                            if 'id' in v[0] or 'ID_INFORMACJI' in v[0]:
+                                wyniki = v
+                                break
+                
+                for d in wyniki:
+                    sygnatura = str(d.get('SYG', '')).upper()
+                    data_wydania = str(d.get('DT_WYD', '')).split('T')[0]
+                    if kod_sygnatury in sygnatura:
+                        doc_id = str(d.get('id') or d.get('ID_INFORMACJI'))
+                        if doc_id:
+                            dokumenty_podatkowe.append({"id": doc_id, "sygnatura": sygnatura, "typ": nazwa_podatku, "data": data_wydania})
+                
+                # Przerywamy pętlę, jeśli na tej stronie było mniej niż 100 wyników (koniec danych)
+                if len(wyniki) < 100:
+                    break
+                page += 1
+                time.sleep(0.2) # Krótka przerwa między stronami wewnątrz MF
+            else:
+                return dokumenty_podatkowe, "ERROR"
+        except requests.exceptions.Timeout:
+            return dokumenty_podatkowe, "TIMEOUT"
+        except:
+            return dokumenty_podatkowe, "ERROR"
+            
+    return dokumenty_podatkowe, "OK"
 
 
-# --- 6. LEWY PANEL NAWIGACYJNY (ZNAZWY MODUŁÓW) ---
+def pobierz_wszystko_z_okresu(data_start_str, data_koniec_str, sesja, nazwa_podatku, kod_sygnatury):
+    """Kompleksowe wyszukiwanie dla Ściągacza (Moduł 2) - cały miesiąc na raz z przewijaniem stron"""
+    dokumenty_podatkowe = []
+    page = 0
+    
+    while True:
+        url = SEARCH_API_URL_BASE.format(page=page)
+        payload = {
+            "filter": {"KATEGORIA_INFORMACJI": [1], "DT_WYD_start": data_start_str, "DT_WYD_end": data_koniec_str},
+            "columns": ["SYG", "ID_INFORMACJI", "DT_WYD"],
+            "searchInFullPhrase": False, "searchInContent": False, "searchInSynonyms": False, "warunkiDodatkowe": []
+        }
+        headers = {"User-Agent": "Mozilla/5.0", "Content-Type": "application/json"}
+        
+        try:
+            response = sesja.post(url, json=payload, headers=headers, timeout=15)
+            if response.status_code == 200:
+                dane = response.json()
+                wyniki = dane.get('content') or dane.get('items') or []
+                
+                if not wyniki:
+                    for k, v in dane.items():
+                        if isinstance(v, list) and len(v) > 0 and isinstance(v[0], dict):
+                            if 'id' in v[0] or 'ID_INFORMACJI' in v[0]:
+                                wyniki = v
+                                break
+                                
+                for d in wyniki:
+                    sygnatura = str(d.get('SYG', '')).upper()
+                    data_wydania = str(d.get('DT_WYD', '')).split('T')[0]
+                    if kod_sygnatury in sygnatura:
+                        doc_id = str(d.get('id') or d.get('ID_INFORMACJI'))
+                        if doc_id:
+                            dokumenty_podatkowe.append({"id": doc_id, "sygnatura": sygnatura, "typ": nazwa_podatku, "data": data_wydania})
+                
+                # Automatyczna paginacja
+                if len(wyniki) < 100:
+                    break
+                page += 1
+                time.sleep(0.2)
+            else:
+                return dokumenty_podatkowe, "ERROR"
+        except requests.exceptions.Timeout:
+            return dokumenty_podatkowe, "TIMEOUT"
+        except:
+            return dokumenty_podatkowe, "ERROR"
+            
+    return dokumenty_podatkowe, "OK"
+
+
+# --- 5. LEWY PANEL NAWIGACYJNY ---
 st.sidebar.title("📌 Menu PickPivot")
 st.sidebar.markdown("---")
 
-# ZMIANA: Moduły mają teraz pełne, profesjonalne nazwy w interfejsie
 aktywna_zakladka = st.sidebar.radio(
     "Wybierz moduł platformy:",
     [
@@ -185,9 +213,9 @@ aktywna_zakladka = st.sidebar.radio(
 )
 
 st.sidebar.markdown("---")
-st.sidebar.caption("© 2026 PickPivot v8.1")
+st.sidebar.caption("© 2026 PickPivot v9.0 (Dynamic Pagination)")
 
-# --- 7. LOGIKA MODUŁÓW ---
+# --- 6. LOGIKA MODUŁÓW ---
 
 if aktywna_zakladka.startswith("1."):
     # ==========================================
@@ -255,7 +283,7 @@ if aktywna_zakladka.startswith("1."):
                                 zapytania_wykonane += 1
                                 continue
                             
-                            status_tekst.info(f"Radar odpytuje: {fraza} ({podatek}) dla {miesiac:02d}/{rok}...")
+                            status_tekst.info(f"Radar odpytuje przedział {data_start_str} - {data_koniec_str}: {fraza} ({podatek})...")
                             lista_trafien, _ = szukaj_w_api_mf(data_start_str, data_koniec_str, fraza, sesja_bazy, podatek, KODY_PODATKOW[podatek])
                             
                             if lista_trafien:
@@ -278,7 +306,6 @@ if aktywna_zakladka.startswith("1."):
                             zapisz_historie(PLIK_KONFIGURACJI_M1, konfiguracja)
                             zapytania_wykonane += 1
                             pasek_postepu.progress(min(1.0, zapytania_wykonane / calkowita_liczba_zapytan))
-                            time.sleep(0.1)
                             
         status_tekst.success(f"🎉 Zakończono! Zebrano {licznik_trafien} dokumentów.")
         st.balloons()
@@ -290,7 +317,7 @@ elif aktywna_zakladka.startswith("2."):
     # MODUŁ 2: ŚCIĄGACZ INTERPRETACJI (BULK)
     # ==========================================
     st.title("📦 Ściągacz Interpretacji (Pobieranie Zbiorcze)")
-    st.markdown("Pobiera **wszystkie** interpretacje indywidualne z wybranego okresu (bez filtrów słów kluczowych) i łączy je w jeden plik.")
+    st.markdown("Pobiera **wszystkie** interpretacje indywidualne z wybranego okresu i łączy je w jeden plik Word.")
 
     konfiguracja_m2 = wczytaj_historie(PLIK_KONFIGURACJI_M2)
     przetworzone_id_m2 = set(konfiguracja_m2.get("przetworzone_id", []))
@@ -298,26 +325,20 @@ elif aktywna_zakladka.startswith("2."):
 
     if pelne_tresci_m2:
         st.success(f"💾 BAZA ŚCIĄGACZA: W pamięci podręcznej serwera znajduje się obecnie {len(pelne_tresci_m2)} zabezpieczonych dokumentów.")
-        colA, colB = st.columns(2)
-        with colA:
-            if st.button("📄 GENERUJ ARCHIWUM WORD (.docx)", use_container_width=True, type="primary"):
-                with st.spinner("Składanie dokumentu... Może to chwilę potrwać przy dużych zbiorach danych..."):
-                    doc = Document()
-                    doc.add_heading('Kompleksowe Archiwum Orzecznictwa', 0)
-                    for rekord in pelne_tresci_m2:
-                        doc.add_heading(f"Sygnatura: {rekord['Sygnatura']}", level=1)
-                        doc.add_paragraph(f"Data: {rekord['Data']} | Podatek: {rekord['Podatek']}")
-                        doc.add_paragraph(f"Link źródłowy: {rekord['Link']}")
-                        doc.add_heading("Pełna treść interpretacji:", level=2)
-                        doc.add_paragraph(wyczysc_tekst_dla_worda(rekord['Tekst']))
-                        doc.add_page_break()
-                    output = io.BytesIO()
-                    doc.save(output)
-                    st.download_button("📥 Pobierz Archiwum", data=output.getvalue(), file_name=f"Archiwum_Zrzut_{datetime.now().strftime('%Y%m%d')}.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", use_container_width=True)
-        with colB:
-            if st.button("🗑️ Wyczyść pamięć Ściągacza", use_container_width=True):
-                wyczysc_dane_serwera(PLIK_KONFIGURACJI_M2, PLIK_REKORDOW_M2)
-                st.rerun()
+        if st.button("📄 GENERUJ ARCHIWUM WORD (.docx)", use_container_width=True, type="primary"):
+            with st.spinner("Składanie dokumentu... Może to chwilę potrwać przy dużych zbiorach danych..."):
+                doc = Document()
+                doc.add_heading('Kompleksowe Archiwum Orzecznictwa', 0)
+                for rekord in pelne_tresci_m2:
+                    doc.add_heading(f"Sygnatura: {rekord['Sygnatura']}", level=1)
+                    doc.add_paragraph(f"Data: {rekord['Data']} | Podatek: {rekord['Podatek']}")
+                    doc.add_paragraph(f"Link źródłowy: {rekord['Link']}")
+                    doc.add_heading("Pełna treść interpretacji:", level=2)
+                    doc.add_paragraph(wyczysc_tekst_dla_worda(rekord['Tekst']))
+                    doc.add_page_break()
+                output = io.BytesIO()
+                doc.save(output)
+                st.download_button("📥 Pobierz Archiwum", data=output.getvalue(), file_name=f"Archiwum_Zrzut_{datetime.now().strftime('%Y%m%d')}.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", use_container_width=True)
         st.markdown("---")
 
     col1, col2, col3 = st.columns(3)
@@ -325,59 +346,69 @@ elif aktywna_zakladka.startswith("2."):
     with col2: wybrane_miesiace_m2 = st.multiselect("Wybierz miesiące:", list(range(1, 13)), key="miesm2")
     with col3: wybrane_podatki_ui_m2 = st.multiselect("Rodzaj podatku:", ["CIT", "VAT", "AKCYZA"], key="podm2")
 
-    if st.button("🚀 Uruchom kompleksowe pobieranie", use_container_width=True):
+    st.markdown("### Opcje pobierania")
+    col_btn1, col_btn2 = st.columns(2)
+    with col_btn1:
+        btn_wznow = st.button("▶️ Wznów pobieranie (Dokończ brakujące)", use_container_width=True)
+    with col_btn2:
+        btn_od_nowa = st.button("🔄 Pobierz całkowicie od nowa (Wyczyść pamięć)", use_container_width=True)
+
+    if btn_wznow or btn_od_nowa:
         if not wybrane_lata_m2 or not wybrane_miesiace_m2 or not wybrane_podatki_ui_m2:
             st.error("Proszę wybrać parametry wejściowe.")
             st.stop()
 
-        dzisiaj = date.today()
+        # Czyszczenie na życzenie użytkownika
+        if btn_od_nowa:
+            wyczysc_dane_serwera(PLIK_KONFIGURACJI_M2, PLIK_REKORDOW_M2)
+            konfiguracja_m2 = {"przetworzone_id": [], "ukonczone_kombinacje": []}
+            przetworzone_id_m2 = set()
+            pelne_tresci_m2 = []
+            st.toast("🧹 Pamięć wyczyszczona. Rozpoczynam od zera.")
+
         status_tekst = st.empty()
         log_szczegolowy = st.empty()
-        
-        # Przygotowanie pełnej listy dni objętych zapytaniem
-        lista_dni_do_sprawdzenia = []
-        for rok in wybrane_lata_m2:
-            for miesiac in wybrane_miesiace_m2:
-                _, liczba_dni = calendar.monthrange(rok, miesiac)
-                for dzien in range(1, liczba_dni + 1):
-                    aktualna_data = date(rok, miesiac, dzien)
-                    if aktualna_data <= dzisiaj:
-                        lista_dni_do_sprawdzenia.append(aktualna_data.strftime('%Y-%m-%d'))
 
-        # --- FAZA 1: SZYBKI SKAN METADANYCH (KONTROLA ILOŚCI) ---
-        status_tekst.info("🔍 Krok 1/2: Odpytuję serwery MF o łączną liczbę dokumentów dla wybranego okresu...")
+        # --- FAZA 1: SZYBKI SKAN METADANYCH ORAZ ZLICZANIE (MIESIĄCAMI) ---
+        status_tekst.info("🔍 Krok 1/2: Analizuję całe miesiące. Pobieram indeks i zliczam oficjalną pulę Ministerstwa Finansów...")
         
         wszystkie_orzeczenia_w_mf = []
         do_pobrania_teraz = []
 
         with requests.Session() as sesja_bazy:
-            for data_str in lista_dni_do_sprawdzenia:
-                for podatek in wybrane_podatki_ui_m2:
-                    log_szczegolowy.text(f"Pobieranie indeksu z dnia: {data_str} dla podatku {podatek}...")
-                    lista_trafien, _ = pobierz_wszystko_z_dnia(data_str, sesja_bazy, podatek, KODY_PODATKOW[podatek])
+            for rok in wybrane_lata_m2:
+                for miesiac in wybrane_miesiace_m2:
+                    _, ost_dzien = calendar.monthrange(rok, miesiac)
+                    data_start_str = f"{rok}-{miesiac:02d}-01"
+                    data_koniec_str = f"{rok}-{miesiac:02d}-{ost_dzien:02d}"
                     
-                    for dok in lista_trafien:
-                        wszystkie_orzeczenia_w_mf.append(dok)
-                        if dok["id"] not in przetworzone_id_m2:
-                            do_pobrania_teraz.append(dok)
+                    for podatek in wybrane_podatki_ui_m2:
+                        log_szczegolowy.text(f"Liczenie bazy z całego przedziału: {data_start_str} - {data_koniec_str} ({podatek})...")
+                        
+                        # Pobiera całe pule dla danego podatku i całego miesiąca naraz z obsługą paginacji
+                        lista_trafien, _ = pobierz_wszystko_z_okresu(data_start_str, data_koniec_str, sesja_bazy, podatek, KODY_PODATKOW[podatek])
+                        
+                        for dok in lista_trafien:
+                            wszystkie_orzeczenia_w_mf.append(dok)
+                            if dok["id"] not in przetworzone_id_m2:
+                                do_pobrania_teraz.append(dok)
 
         laczna_liczba_orzeczen = len(wszystkie_orzeczenia_w_mf)
         liczba_brakujacych = len(do_pobrania_teraz)
 
-        # ZMIANA: Natychmiastowe pokazanie użytkownikowi łącznej liczby elementów w bazie rządowej
-        st.markdown(f"### 📊 Wynik analizy wstępnej okresu:")
-        st.info(f"W bazie Ministerstwa Finansów znajduje się łącznie: **{laczna_liczba_orzeczen}** interpretacji dla wybranych parametrów.")
-        st.write(f"Do pobrania pozostało: **{liczba_brakujacych}** nowych dokumentów (reszta znajduje się już w bezpiecznym cache serwera).")
+        st.markdown(f"### 📊 Raport przedstartowy:")
+        st.info(f"Odnaleziono łącznie: **{laczna_liczba_orzeczen}** wystawionych interpretacji dla wskazanego przedziału czasowego i podatków.")
+        st.write(f"Do pobrania i scalenia pozostało: **{liczba_brakujacych}** dokumentów.")
         
         if liczba_brakujacych == 0:
-            status_tekst.success("✔️ Wszystkie dokumenty z tego okresu są już pobrane i gotowe do wygenerowania pliku Word!")
+            status_tekst.success("✔️ Wszystkie dokumenty z tego okresu są już bezpiecznie zapisane. Kliknij przycisk Generuj u góry!")
             log_szczegolowy.empty()
             st.stop()
 
         time.sleep(3)
 
-        # --- FAZA 2: ITERACYJNE POBIERANIE Z LICZNIKIEM KONTROLNYM ---
-        status_tekst.info(f"⏳ Krok 2/2: Pobieranie pełnych treści dokumentów (0 / {liczba_brakujacych})...")
+        # --- FAZA 2: FAKTYCZNE POBIERANIE DOKUMENTÓW (PDF -> TEXT) ---
+        status_tekst.info(f"⏳ Krok 2/2: Pobieranie fizycznych plików i czytanie treści (0 / {liczba_brakujacych})...")
         pasek_postepu = st.progress(0)
         
         licznik_pobranych_w_sesji = 0
@@ -399,22 +430,22 @@ elif aktywna_zakladka.startswith("2."):
                 konfiguracja_m2["przetworzone_id"].append(dok["id"])
                 licznik_pobranych_w_sesji += 1
                 
-                # Zapis sukcesywny po każdym pliku zapobiega utracie danych przy zerwaniu sesji
                 zapisz_pelne_tresci(PLIK_REKORDOW_M2, aktualne_tresci_m2)
                 zapisz_historie(PLIK_KONFIGURACJI_M2, konfiguracja_m2)
 
-            # Aktualizacja statusu, dająca użytkownikowi fizyczną kontrolę nad procesem
-            status_tekst.info(f"⏳ Pobrano i scalono {licznik_pobranych_w_sesji} z {liczba_brakujacych} brakujących plików (Łączna pula w bazie: {len(aktualne_tresci_m2)} z {laczna_liczba_orzeczen} istniejących).")
+            status_tekst.info(f"⏳ Pobrano i scalono {licznik_pobranych_w_sesji} z {liczba_brakujacych} dokumentów (Łączna pula to obecnie: {len(aktualne_tresci_m2)} z {laczna_liczba_orzeczen}).")
             pasek_postepu.progress((idx + 1) / liczba_brakujacych)
             time.sleep(random.uniform(0.1, 0.2))
 
-        # Komunikat ostateczny z pełnym podsumowaniem matematycznym
-        status_tekst.success(f"🎉 Sukces! Oficjalna łączna liczba interpretacji w tym okresie wynosiła {laczna_liczba_orzeczen}. System pomyślnie zgrał i zabezpieczył w pliku {len(aktualne_tresci_m2)} z nich.")
+        status_tekst.success(f"🎉 SUKCES! Zweryfikowana, oficjalna łączna liczba to {laczna_liczba_orzeczen} interpretacji. System posiada wyizolowaną i połączoną treść z {len(aktualne_tresci_m2)} z nich.")
         log_szczegolowy.empty()
         st.balloons()
         time.sleep(4)
         st.rerun()
 
 else:
-    st.title(f"🛠️ Moduł {aktywna_zakladka}")
+    # ==========================================
+    # MODUŁY PUSTE
+    # ==========================================
+    st.title(f"🛠️ {aktywna_zakladka}")
     st.info("Ta funkcjonalność jest obecnie w fazie projektowania i zostanie dodana w przyszłości.", icon="ℹ️")
