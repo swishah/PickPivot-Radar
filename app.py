@@ -8,6 +8,7 @@ import calendar
 import json
 import os
 import re
+import pandas as pd
 from datetime import datetime, date
 from docx import Document
 
@@ -23,8 +24,6 @@ SEARCH_API_URL = "https://eureka.mf.gov.pl/api/public/v1/wyszukiwarka/informacje
 PDF_API_URL = "https://eureka.mf.gov.pl/api/public/v1/informacje/{id}/eksport/pdf"
 PODGLAD_URL = "https://eureka.mf.gov.pl/informacje/podglad/{id}"
 
-# EKSPERCKA LISTA FRAZ: Pełne, najczęściej występujące odmiany gramatyczne.
-# Dzięki "searchInFullPhrase: True" serwer MF filtruje je błyskawicznie bez pobierania PDF-ów.
 FRAZY_KLUCZOWE = [
     "sieć ciepłownicza", "sieci ciepłowniczej", "sieci ciepłownicze", "sieciami ciepłowniczymi",
     "przebudowa sieci", "przebudowy sieci", "przebudowie sieci",
@@ -32,7 +31,7 @@ FRAZY_KLUCZOWE = [
     "węzeł cieplny", "węzła cieplnego", "węzły cieplne", "węzłach cieplnych",
     "taryfa dla ciepła", "taryfy dla ciepła", "taryf dla ciepła",
     "wodociąg", "wodociągu", "wodociągi", "wodociągów", "wodociągowa", "wodociągowej", "wodociągowych",
-    "kanalizacja", "kanalizacji", "kanalizacyjna", "kanalizacyjnej", "kanalizacyjnych",
+    "kanalizacja", "kanalizacji", "kanalizacyjna", "kanalizcznej", "kanalizacyjnych",
     "oczyszczalnia ścieków", "oczyszczalni ścieków", "ścieki", "ścieków",
     "stacja uzdatniania", "stacji uzdatniania",
     "spółka komunalna", "spółki komunalnej", "spółek komunalnych", "spółkom komunalnym"
@@ -84,63 +83,59 @@ def szukaj_w_api_mf_strikt(data_start_str, data_koniec_str, fraza, sesja, nazwa_
         "query": fraza,
         "filter": {"KATEGORIA_INFORMACJI": [1], "DT_WYD_start": data_start_str, "DT_WYD_end": data_koniec_str},
         "columns": ["SYG", "ID_INFORMACJI", "DT_WYD"],
-        "searchInFullPhrase": True, # KLUCZ DO SZYBKOŚCI: Szukamy tylko dokładnych dopasowań form gramatycznych
+        "searchInFullPhrase": True, 
         "searchInContent": True,    
         "searchInSynonyms": False,
         "warunkiDodatkowe": []
     }
     headers = {"User-Agent": "Mozilla/5.0", "Content-Type": "application/json", "Origin": "https://eureka.mf.gov.pl"}
     
-    for _ in range(3):
-        try:
-            response = sesja.post(SEARCH_API_URL, json=payload, headers=headers, timeout=30)
-            if response.status_code == 200:
-                dane = response.json()
-                wyniki = dane.get('content') or dane.get('items') or []
-                if not wyniki:
-                    for k, v in dane.items():
-                        if isinstance(v, list) and len(v) > 0 and isinstance(v[0], dict):
-                            if 'id' in v[0] or 'ID_INFORMACJI' in v[0]:
-                                wyniki = v
-                                break
-                                
-                dokumenty_podatkowe = []
-                for d in wyniki:
-                    sygnatura = str(d.get('SYG', '')).upper()
-                    data_wydania = str(d.get('DT_WYD', '')).split('T')[0]
-                    
-                    if kod_sygnatury in sygnatura:
-                        doc_id = str(d.get('id') or d.get('ID_INFORMACJI'))
-                        if doc_id:
-                            dokumenty_podatkowe.append({"id": doc_id, "sygnatura": sygnatura, "typ": nazwa_podatku, "data": data_wydania})
-                return dokumenty_podatkowe
-        except:
-            time.sleep(1)
-    return []
+    try:
+        # Zabezpieczenie czasowe: max 7 sekund na odpowiedź strukturalną
+        response = sesja.post(SEARCH_API_URL, json=payload, headers=headers, timeout=7)
+        if response.status_code == 200:
+            dane = response.json()
+            wyniki = dane.get('content') or dane.get('items') or []
+            if not wyniki:
+                for k, v in dane.items():
+                    if isinstance(v, list) and len(v) > 0 and isinstance(v[0], dict):
+                        if 'id' in v[0] or 'ID_INFORMACJI' in v[0]:
+                            wyniki = v
+                            break
+                            
+            dokumenty_podatkowe = []
+            for d in wyniki:
+                sygnatura = str(d.get('SYG', '')).upper()
+                data_wydania = str(d.get('DT_WYD', '')).split('T')[0]
+                
+                if kod_sygnatury in sygnatura:
+                    doc_id = str(d.get('id') or d.get('ID_INFORMACJI'))
+                    if doc_id:
+                        dokumenty_podatkowe.append({"id": doc_id, "sygnatura": sygnatura, "typ": nazwa_podatku, "data": data_wydania})
+            return dokumenty_podatkowe, "OK"
+    except requests.exceptions.Timeout:
+        return [], "TIMEOUT"
+    except:
+        return [], "ERROR"
+    return [], "OK"
 
 def pobierz_pelny_tekst_pypdf(id_dokumentu):
     url = PDF_API_URL.format(id=id_dokumentu)
     headers_pdf = {"User-Agent": "Mozilla/5.0", "Referer": "https://eureka.mf.gov.pl/"}
     
-    for _ in range(3):
-        try:
-            # Dodano rygorystyczny timeout=15, aby uszkodzony plik lub zawieszony serwer nie zatrzymał aplikacji
-            response = requests.get(url, headers=headers_pdf, timeout=15)
-            if response.status_code == 200:
-                plik_w_pamieci = io.BytesIO(response.content)
-                tekst_dokumentu = ""
-                try:
-                    reader = PyPDF2.PdfReader(plik_w_pamieci)
-                    for strona in reader.pages:
-                        wyc = strona.extract_text()
-                        if wyc: tekst_dokumentu += wyc + "\n"
-                    return tekst_dokumentu
-                except:
-                    return None
-            elif response.status_code in [404, 400]:
-                return None
-        except:
-            time.sleep(1)
+    try:
+        # Maksymalnie 10 sekund na pobranie fizycznego pliku tekstowego
+        response = requests.get(url, headers=headers_pdf, timeout=10)
+        if response.status_code == 200:
+            plik_w_pamieci = io.BytesIO(response.content)
+            tekst_dokumentu = ""
+            reader = PyPDF2.PdfReader(plik_w_pamieci)
+            for strona in reader.pages:
+                wyc = strona.extract_text()
+                if wyc: tekst_dokumentu += wyc + "\n"
+            return tekst_dokumentu
+    except:
+        return None
     return None
 
 # --- 5. LEWY PANEL NAWIGACYJNY ---
@@ -148,12 +143,12 @@ st.sidebar.title("📌 Menu PickPivot")
 st.sidebar.markdown("---")
 aktywna_zakladka = st.sidebar.radio("Wybierz moduł platformy:", ["1", "2", "3", "4", "5", "6"])
 st.sidebar.markdown("---")
-st.sidebar.caption("© 2026 PickPivot v6.1")
+st.sidebar.caption("© 2026 PickPivot v6.2")
 
-# --- 6. GŁÓWNY EKRAN ---
+# --- 6. GŁÓWNY EKRAN OPRUCOWANIA ---
 if aktywna_zakladka == "1":
     st.title("⚡ PickPivot: Niezawodny Radar Orzecznictwa")
-    st.markdown("Wersja zoptymalizowana sieciowo. Dokonuje błyskawicznej selekcji po stronie MF i pobiera wyłącznie pewne dokumenty.")
+    st.markdown("Monitorowanie postępów w czasie rzeczywistym. Pełna odporność na zawieszenia sieciowe.")
 
     konfiguracja = wczytaj_historie()
     przetworzone_id = set(konfiguracja.get("przetworzone_id", []))
@@ -165,7 +160,7 @@ if aktywna_zakladka == "1":
         colA, colB = st.columns(2)
         with colA:
             if st.button("📄 GENERUJ I POBIERZ RAPORT WORD (.docx)", use_container_width=True, type="primary"):
-                with st.spinner("Trwa błyskawiczne składanie dokumentu tekstowego..."):
+                with st.spinner("Trwa składanie dokumentu tekstowego..."):
                     doc = Document()
                     doc.add_heading('Baza Orzecznictwa PickPivot', 0)
                     
@@ -218,11 +213,16 @@ if aktywna_zakladka == "1":
         dzisiaj = date.today()
         pasek_postepu = st.progress(0)
         
-        st.markdown("### 🖥️ Konsola Statusu")
-        status_tekst = st.empty()
+        # INICJALIZACJA MATRYCY POSTĘPU NA EKRANIE
+        st.markdown("### 📊 Stan wyszukiwania słów kluczowych na żywo")
+        macierz_danych = {"Fraza kluczowa": FRAZY_KLUCZOWE}
+        for p in wybrane_podatki_ui:
+            macierz_danych[p] = ["⏳ Oczekiwanie"] * len(FRAZY_KLUCZOWE)
+            
+        df_postepu = pd.DataFrame(macierz_danych)
+        widok_tabeli = st.dataframe(df_postepu, use_container_width=True, hide_index=True)
         
-        with st.expander("Szczegółowy log operacji", expanded=True):
-            okno_logow = st.container()
+        status_tekst = st.empty()
         
         licznik_trafien = 0
         calkowita_liczba_zapytan = len(wybrane_lata) * len(wybrane_miesiace) * len(FRAZY_KLUCZOWE) * len(wybrane_podatki_ui)
@@ -235,32 +235,38 @@ if aktywna_zakladka == "1":
                     data_start_str = f"{rok}-{miesiac:02d}-01"
                     data_koniec_str = f"{rok}-{miesiac:02d}-{ost_dzien:02d}"
                     
-                    for fraza in FRAZY_KLUCZOWE:
+                    for idx_fraza, fraza in enumerate(FRAZY_KLUCZOWE):
                         for podatek in wybrane_podatki_ui:
                             
-                            # Logowanie na żywo na ekranie
-                            status_tekst.info(f"🔍 [{miesiac:02d}/{rok}] Odpytuję bazę o frazę: '{fraza}' ({podatek})...")
-                            
                             klucz_kombinacji = f"{rok}_{miesiac}_{fraza}_{podatek}"
+                            
                             if klucz_kombinacji in ukonczone_kombinacje:
+                                df_postepu.at[idx_fraza, podatek] = "✔️ Pominięto (Historia)"
+                                widok_tabeli.dataframe(df_postepu, use_container_width=True, hide_index=True)
                                 zapytania_wykonane += 1
-                                postep = min(1.0, zapytania_wykonane / calkowita_liczba_zapytan)
-                                pasek_postepu.progress(postep)
                                 continue
                             
-                            lista_trafien = szukaj_w_api_mf_strikt(data_start_str, data_koniec_str, fraza, sesja_bazy, podatek, KODY_PODATKOW[podatek])
+                            # Zmiana statusu komórki na "Skanowanie"
+                            df_postepu.at[idx_fraza, podatek] = "🔍 Skanowanie..."
+                            widok_tabeli.dataframe(df_postepu, use_container_width=True, hide_index=True)
                             
-                            if lista_trafien:
+                            status_tekst.text(f"Aktualnie odpytuję serwer o: {fraza} ({podatek}) dla okresu {miesiac:02d}/{rok}")
+                            
+                            lista_trafien, stan_sieci = szukaj_w_api_mf_strikt(data_start_str, data_koniec_str, fraza, sesja_bazy, podatek, KODY_PODATKOW[podatek])
+                            
+                            if stan_sieci == "TIMEOUT" or stan_sieci == "ERROR":
+                                df_postepu.at[idx_fraza, podatek] = "⚠️ Brak odpowiedzi serwera"
+                                widok_tabeli.dataframe(df_postepu, use_container_width=True, hide_index=True)
+                            elif lista_trafien:
                                 aktualne_tresci = wczytaj_pelne_tresci()
+                                znaleziono_nowych = 0
                                 
                                 for dok in lista_trafien:
                                     doc_id = dok["id"]
                                     if doc_id in przetworzone_id:
                                         continue
                                         
-                                    status_tekst.warning(f"⏳ Wykryto celne trafienie! Pobieram treść: {dok['sygnatura']}...")
                                     tekst_dokumentu = pobierz_pelny_tekst_pypdf(doc_id)
-                                    
                                     if tekst_dokumentu:
                                         nowy_rekord = {
                                             "Data": dok["data"],
@@ -274,11 +280,14 @@ if aktywna_zakladka == "1":
                                         przetworzone_id.add(doc_id)
                                         konfiguracja["przetworzone_id"].append(doc_id)
                                         licznik_trafien += 1
-                                        
-                                        with okno_logow:
-                                            st.success(f"✔️ Dodano do raportu: [{fraza.upper()}] -> {dok['sygnatura']}")
+                                        znaleziono_nowych += 1
                                 
                                 zapisz_pelne_tresci(aktualne_tresci)
+                                df_postepu.at[idx_fraza, podatek] = f"✔️ Trafień: {znaleziono_nowych}"
+                                widok_tabeli.dataframe(df_postepu, use_container_width=True, hide_index=True)
+                            else:
+                                df_postepu.at[idx_fraza, podatek] = "❌ Brak wynikow"
+                                widok_tabeli.dataframe(df_postepu, use_container_width=True, hide_index=True)
                             
                             ukonczone_kombinacje.add(klucz_kombinacji)
                             konfiguracja["ukonczone_kombinacje"].append(klucz_kombinacji)
@@ -288,12 +297,11 @@ if aktywna_zakladka == "1":
                             postep = min(1.0, zapytania_wykonane / calkowita_liczba_zapytan)
                             pasek_postepu.progress(postep)
                             
-                            # Bardzo krótka przerwa dla stabilności połączenia
-                            time.sleep(random.uniform(0.1, 0.2))
+                            time.sleep(random.uniform(0.1, 0.3))
 
         status_tekst.success(f"🎉 WSZYSTKIE WYSZUKIWANIA ZOSTAŁY ZAKOŃCZONE! Zebrano łącznie {licznik_trafien} unikalnych interpretacji.")
         st.balloons()
-        time.sleep(3)
+        time.sleep(4)
         st.rerun()
 
 else:
