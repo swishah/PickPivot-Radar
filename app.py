@@ -4,12 +4,11 @@ import PyPDF2
 import time
 import random
 import io
-import calendar
 import json
 import os
 import re
 import pandas as pd
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from docx import Document
 
 # --- 1. USTAWIENIA STRONY (Muszą być na samym początku) ---
@@ -61,7 +60,9 @@ FRAZY_KLUCZOWE = [
     "stacja uzdatniania", "spółka komunalna"
 ]
 
+# Dodano podatek PIT do ogólnej matrycy
 KODY_PODATKOW = {
+    "PIT": ".4011.",
     "CIT": ".4010.",
     "VAT": ".4012.",
     "AKCYZA": ".4013."
@@ -75,7 +76,7 @@ def wczytaj_historie(plik):
             if "uszkodzone_id" not in dane:
                 dane["uszkodzone_id"] = []
             return dane
-    return {"przetworzone_id": [], "ukonczone_kombinacje": []}
+    return {"przetworzone_id": [], "ukonczone_kombinacje": [], "uszkodzone_id": []}
 
 def zapisz_historie(plik, konfiguracja):
     with open(plik, 'w', encoding='utf-8') as f:
@@ -231,7 +232,7 @@ if st.sidebar.button("🚪 Wyloguj się", use_container_width=True):
     st.rerun()
 
 st.sidebar.markdown("---")
-st.sidebar.caption("© 2026 PickPivot v10.1 Secure")
+st.sidebar.caption("© 2026 PickPivot v11.0 (Kalendarz & PIT)")
 
 # --- 7. LOGIKA MODUŁÓW ---
 
@@ -269,60 +270,62 @@ if aktywna_zakladka.startswith("1."):
                 st.rerun()
         st.markdown("---")
 
-    col1, col2, col3 = st.columns(3)
-    with col1: wybrane_lata = st.multiselect("Wybierz lata:", [2024, 2025, 2026])
-    with col2: wybrane_miesiace = st.multiselect("Wybierz miesiące:", list(range(1, 13)))
-    with col3: wybrane_podatki_ui = st.multiselect("Rodzaj podatku:", ["CIT", "VAT", "AKCYZA"])
+    # Interfejs Kalendarza
+    col1, col2 = st.columns(2)
+    with col1:
+        dzisiaj = date.today()
+        poczatek_mca = dzisiaj.replace(day=1)
+        wybrany_okres = st.date_input("Wybierz przedział czasu (od - do):", value=(poczatek_mca, dzisiaj), key="okres_m1")
+    with col2:
+        wybrane_podatki_ui = st.multiselect("Rodzaj podatku:", ["PIT", "CIT", "VAT", "AKCYZA"], default=["VAT"])
 
     if st.button("🚀 Uruchom skanowanie słów kluczowych", use_container_width=True):
-        if not wybrane_lata or not wybrane_miesiace or not wybrane_podatki_ui:
-            st.error("Proszę wybrać parametry.")
+        if not wybrany_okres or len(wybrany_okres) != 2 or not wybrane_podatki_ui:
+            st.error("Proszę upewnić się, że wybrano pełny przedział na kalendarzu (data początkowa i końcowa) oraz rodzaj podatku.")
             st.stop()
+            
+        data_start_str = wybrany_okres[0].strftime('%Y-%m-%d')
+        data_koniec_str = wybrany_okres[1].strftime('%Y-%m-%d')
             
         pasek_postepu = st.progress(0)
         status_tekst = st.empty()
-        calkowita_liczba_zapytan = len(wybrane_lata) * len(wybrane_miesiace) * len(FRAZY_KLUCZOWE) * len(wybrane_podatki_ui)
+        calkowita_liczba_zapytan = len(FRAZY_KLUCZOWE) * len(wybrane_podatki_ui)
         zapytania_wykonane = 0
         licznik_trafien = 0
 
         with requests.Session() as sesja_bazy:
-            for rok in wybrane_lata:
-                for miesiac in wybrane_miesiace:
-                    _, ost_dzien = calendar.monthrange(rok, miesiac)
-                    data_start_str = f"{rok}-{miesiac:02d}-01"
-                    data_koniec_str = f"{rok}-{miesiac:02d}-{ost_dzien:02d}"
-                    for fraza in FRAZY_KLUCZOWE:
-                        for podatek in wybrane_podatki_ui:
-                            klucz_kombinacji = f"M1_{rok}_{miesiac}_{fraza}_{podatek}"
-                            if klucz_kombinacji in ukonczone_kombinacje:
-                                zapytania_wykonane += 1
-                                continue
+            for fraza in FRAZY_KLUCZOWE:
+                for podatek in wybrane_podatki_ui:
+                    klucz_kombinacji = f"M1_{data_start_str}_{data_koniec_str}_{fraza}_{podatek}"
+                    if klucz_kombinacji in ukonczone_kombinacje:
+                        zapytania_wykonane += 1
+                        continue
+                    
+                    status_tekst.info(f"Radar odpytuje przedział {data_start_str} - {data_koniec_str}: {fraza} ({podatek})...")
+                    lista_trafien, _ = szukaj_w_api_mf(data_start_str, data_koniec_str, fraza, sesja_bazy, podatek, KODY_PODATKOW[podatek])
+                    
+                    if lista_trafien:
+                        aktualne_tresci = wczytaj_pelne_tresci(PLIK_REKORDOW_M1)
+                        for dok in lista_trafien:
+                            if dok["id"] not in przetworzone_id:
+                                tekst, status_pobrania = pobierz_tekst_pdf(dok["id"])
+                                if tekst:
+                                    aktualne_tresci.append({
+                                        "Data": dok["data"], "Podatek": dok["typ"], "Sygnatura": dok["sygnatura"],
+                                        "Słowo kluczowe": fraza.upper(), "Link": PODGLAD_URL.format(id=dok["id"]), "Tekst": tekst
+                                    })
+                                    przetworzone_id.add(dok["id"])
+                                    konfiguracja["przetworzone_id"].append(dok["id"])
+                                    licznik_trafien += 1
+                        zapisz_pelne_tresci(PLIK_REKORDOW_M1, aktualne_tresci)
+                    
+                    ukonczone_kombinacje.add(klucz_kombinacji)
+                    konfiguracja["ukonczone_kombinacje"].append(klucz_kombinacji)
+                    zapisz_historie(PLIK_KONFIGURACJI_M1, konfiguracja)
+                    zapytania_wykonane += 1
+                    pasek_postepu.progress(min(1.0, zapytania_wykonane / calkowita_liczba_zapytan))
                             
-                            status_tekst.info(f"Radar odpytuje przedział {data_start_str} - {data_koniec_str}: {fraza} ({podatek})...")
-                            lista_trafien, _ = szukaj_w_api_mf(data_start_str, data_koniec_str, fraza, sesja_bazy, podatek, KODY_PODATKOW[podatek])
-                            
-                            if lista_trafien:
-                                aktualne_tresci = wczytaj_pelne_tresci(PLIK_REKORDOW_M1)
-                                for dok in lista_trafien:
-                                    if dok["id"] not in przetworzone_id:
-                                        tekst, status_pobrania = pobierz_tekst_pdf(dok["id"])
-                                        if tekst:
-                                            aktualne_tresci.append({
-                                                "Data": dok["data"], "Podatek": dok["typ"], "Sygnatura": dok["sygnatura"],
-                                                "Słowo kluczowe": fraza.upper(), "Link": PODGLAD_URL.format(id=dok["id"]), "Tekst": tekst
-                                            })
-                                            przetworzone_id.add(dok["id"])
-                                            konfiguracja["przetworzone_id"].append(dok["id"])
-                                            licznik_trafien += 1
-                                zapisz_pelne_tresci(PLIK_REKORDOW_M1, aktualne_tresci)
-                            
-                            ukonczone_kombinacje.add(klucz_kombinacji)
-                            konfiguracja["ukonczone_kombinacje"].append(klucz_kombinacji)
-                            zapisz_historie(PLIK_KONFIGURACJI_M1, konfiguracja)
-                            zapytania_wykonane += 1
-                            pasek_postepu.progress(min(1.0, zapytania_wykonane / calkowita_liczba_zapytan))
-                            
-        status_tekst.success(f"🎉 Zakończono! Zebrano {licznik_trafien} dokumentów.")
+        status_tekst.success(f"🎉 Zakończono! Zebrano {licznik_trafien} dokumentów z wybranego okresu.")
         st.balloons()
         time.sleep(3)
         st.rerun()
@@ -332,17 +335,16 @@ elif aktywna_zakladka.startswith("2."):
     # MODUŁ 2: ŚCIĄGACZ INTERPRETACJI (BULK)
     # ==========================================
     st.title("📦 Ściągacz Interpretacji (Pobieranie Zbiorcze)")
-    st.markdown("Pobiera **wszystkie** interpretacje indywidualne z wybranego okresu i łączy je w jeden plik Word.")
+    st.markdown("Pobiera **wszystkie** interpretacje indywidualne z wybranego przedziału na kalendarzu i łączy je w jeden plik Word.")
 
-    # --- NOWOŚĆ: AKTYWNY EKRAN BLOKADY SIECIOWEJ (ANTY-BAN) ---
+    # --- AKTYWNY EKRAN BLOKADY SIECIOWEJ (ANTY-BAN) ---
     if st.session_state.get('lockout_active_m2', False):
         st.markdown("<br><br>", unsafe_allow_html=True)
-        st.error("🔒 SYSTEM OCHRONY PRZED BANEM: Wykryto twardą blokadę sieciową serwera MF.")
-        st.info("Aplikacja została tymczasowo zawieszona na 5 minut, aby zresetować połączenie i chronić Twoje IP przed trwałą blokadą.")
+        st.error("🔒 SYSTEM OCHRONY PRZED BANEM: Wykryto błąd sieciowy serwera MF (zbyt szybkie pobieranie).")
+        st.info("Aplikacja została tymczasowo zawieszona na 5 minut, aby zresetować połączenie i chronić Twoje IP przed blokadą.")
         
         elapsed = time.time() - st.session_state.get('lockout_start_m2', 0)
         if elapsed < 300:
-            # Pętla licznika na żywo
             countdown_placeholder = st.empty()
             while elapsed < 300:
                 remaining = int(300 - elapsed)
@@ -352,29 +354,26 @@ elif aktywna_zakladka.startswith("2."):
                 elapsed = time.time() - st.session_state.get('lockout_start_m2', 0)
             st.rerun()
         else:
-            # Okres 5 minut minął - wyświetlamy guzik idealnie na środku strony
             st.success("🎉 Czas oczekiwania minął pomyślnie! Urzędowe limity zostały zresetowane.")
             st.markdown("<br><br>", unsafe_allow_html=True)
             col_l, col_m, col_r = st.columns([1, 2, 1])
             with col_m:
-                # Żądany przycisk na środku ekranu
                 if st.button("▶️ WZNÓW PRZERWANE POBIERANIE", use_container_width=True, type="primary"):
                     st.session_state['lockout_active_m2'] = False
-                    st.session_state['auto_resume_m2'] = True # Flaga automatycznego startu pętli
+                    st.session_state['auto_resume_m2'] = True
                     st.rerun()
-            st.stop() # Blokuje renderowanie reszty strony pod spodem podczas ekranu gotowości
+            st.stop()
 
-    # Regularny widok Ściągacza
     konfiguracja_m2 = wczytaj_historie(PLIK_KONFIGURACJI_M2)
     przetworzone_id_m2 = set(konfiguracja_m2.get("przetworzone_id", []))
     uszkodzone_id_m2 = set(konfiguracja_m2.get("uszkodzone_id", []))
     pelne_tresci_m2 = wczytaj_pelne_tresci(PLIK_REKORDOW_M2)
 
     if pelne_tresci_m2 or uszkodzone_id_m2:
-        st.success(f"💾 BAZA ŚCIĄGACZA: W pamięci podręcznej serwera zabezpieczono {len(pelne_tresci_m2)} dokumentów. Zignorowano {len(uszkodzone_id_m2)} pustych rekordów.")
+        st.success(f"💾 BAZA ŚCIĄGACZA: W pamięci podręcznej serwera zabezpieczono {len(pelne_tresci_m2)} dokumentów. Zignorowano {len(uszkodzone_id_m2)} pustych rekordów w MF.")
         if pelne_tresci_m2:
             if st.button("📄 GENERUJ ARCHIWUM WORD (.docx)", use_container_width=True, type="primary"):
-                with st.spinner("Składanie dokumentu..."):
+                with st.spinner("Składanie potężnego dokumentu... Może to chwilę potrwać..."):
                     doc = Document()
                     doc.add_heading('Kompleksowe Archiwum Orzecznictwa', 0)
                     for rekord in pelne_tresci_m2:
@@ -389,10 +388,13 @@ elif aktywna_zakladka.startswith("2."):
                     st.download_button("📥 Pobierz Archiwum", data=output.getvalue(), file_name=f"Archiwum_Zrzut_{datetime.now().strftime('%Y%m%d')}.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", use_container_width=True)
         st.markdown("---")
 
-    col1, col2, col3 = st.columns(3)
-    with col1: wybrane_lata_m2 = st.multiselect("Wybierz lata:", [2024, 2025, 2026], key="latam2")
-    with col2: wybrane_miesiace_m2 = st.multiselect("Wybierz miesiące:", list(range(1, 13)), key="miesm2")
-    with col3: wybrane_podatki_ui_m2 = st.multiselect("Rodzaj podatku:", ["CIT", "VAT", "AKCYZA"], key="podm2")
+    col1, col2 = st.columns(2)
+    with col1:
+        dzisiaj = date.today()
+        poczatek_mca = dzisiaj.replace(day=1)
+        wybrany_okres_m2 = st.date_input("Wybierz przedział czasu (od - do):", value=(poczatek_mca, dzisiaj), key="okres_m2")
+    with col2:
+        wybrane_podatki_ui_m2 = st.multiselect("Rodzaj podatku:", ["PIT", "CIT", "VAT", "AKCYZA"], default=["VAT"], key="podm2")
 
     st.markdown("### Opcje pobierania")
     col_btn1, col_btn2 = st.columns(2)
@@ -401,24 +403,23 @@ elif aktywna_zakladka.startswith("2."):
     with col_btn2:
         btn_od_nowa = st.button("🔄 Pobierz całkowicie od nowa (Wyczyść pamięć)", use_container_width=True)
 
-    # Uruchomienie pętli pobierania na skutek kliknięcia LUB automatycznego wznowienia po odliczeniu 5 minut
     run_loop = btn_wznow or btn_od_nowa or st.session_state.get('auto_resume_m2', False)
 
     if run_loop:
-        # Odzyskiwanie parametrów po odblokowaniu ekranu ochronnego
+        # Odzyskiwanie lub zapisywanie parametrów sesji
         if st.session_state.get('auto_resume_m2', False):
-            wybrane_lata_m2 = st.session_state.get('saved_lata_m2', [])
-            wybrane_miesiace_m2 = st.session_state.get('saved_mies_m2', [])
-            wybrane_podatki_ui_m2 = st.session_state.get('saved_pod_m2', [])
+            wybrany_okres_m2 = st.session_state.get('saved_okres_m2', wybrany_okres_m2)
+            wybrane_podatki_ui_m2 = st.session_state.get('saved_pod_m2', wybrane_podatki_ui_m2)
             st.session_state['auto_resume_m2'] = False
         else:
-            if not wybrane_lata_m2 or not wybrane_miesiace_m2 or not wybrane_podatki_ui_m2:
-                st.error("Proszę wybrać parametry wejściowe.")
+            if not wybrany_okres_m2 or len(wybrany_okres_m2) != 2 or not wybrane_podatki_ui_m2:
+                st.error("Proszę wybrać pełny okres na kalendarzu (od - do) oraz rodzaj podatku.")
                 st.stop()
-            # Zabezpieczenie parametrów w pamięci chmury (nie znikną podczas ukrycia widgetów UI)
-            st.session_state['saved_lata_m2'] = wybrane_lata_m2
-            st.session_state['saved_mies_m2'] = wybrane_miesiace_m2
+            st.session_state['saved_okres_m2'] = wybrany_okres_m2
             st.session_state['saved_pod_m2'] = wybrane_podatki_ui_m2
+
+        data_start_str = wybrany_okres_m2[0].strftime('%Y-%m-%d')
+        data_koniec_str = wybrany_okres_m2[1].strftime('%Y-%m-%d')
 
         if btn_od_nowa:
             wyczysc_dane_serwera(PLIK_KONFIGURACJI_M2, PLIK_REKORDOW_M2)
@@ -431,26 +432,20 @@ elif aktywna_zakladka.startswith("2."):
         status_tekst = st.empty()
         log_szczegolowy = st.empty()
 
-        status_tekst.info("🔍 Krok 1/2: Analizuję całe miesiące przedziałami. Zliczam oficjalną pulę dokumentów MF...")
+        status_tekst.info(f"🔍 Krok 1/2: Odpytywanie serwerów MF dla przedziału {data_start_str} - {data_koniec_str}. Zliczam bazę...")
         
         wszystkie_orzeczenia_w_mf = []
         do_pobrania_teraz = []
 
         with requests.Session() as sesja_bazy:
-            for rok in wybrane_lata_m2:
-                for miesiac in wybrane_miesiace_m2:
-                    _, ost_dzien = calendar.monthrange(rok, miesiac)
-                    data_start_str = f"{rok}-{miesiac:02d}-01"
-                    data_koniec_str = f"{rok}-{miesiac:02d}-{ost_dzien:02d}"
-                    
-                    for podatek in wybrane_podatki_ui_m2:
-                        log_szczegolowy.text(f"Zliczanie z przedziału: {data_start_str} - {data_koniec_str} ({podatek})...")
-                        lista_trafien, _ = pobierz_wszystko_z_okresu(data_start_str, data_koniec_str, sesja_bazy, podatek, KODY_PODATKOW[podatek])
-                        
-                        for dok in lista_trafien:
-                            wszystkie_orzeczenia_w_mf.append(dok)
-                            if dok["id"] not in przetworzone_id_m2 and dok["id"] not in uszkodzone_id_m2:
-                                do_pobrania_teraz.append(dok)
+            for podatek in wybrane_podatki_ui_m2:
+                log_szczegolowy.text(f"Zliczanie dokumentów ({podatek})...")
+                lista_trafien, _ = pobierz_wszystko_z_okresu(data_start_str, data_koniec_str, sesja_bazy, podatek, KODY_PODATKOW[podatek])
+                
+                for dok in lista_trafien:
+                    wszystkie_orzeczenia_w_mf.append(dok)
+                    if dok["id"] not in przetworzone_id_m2 and dok["id"] not in uszkodzone_id_m2:
+                        do_pobrania_teraz.append(dok)
 
         laczna_liczba_orzeczen = len(wszystkie_orzeczenia_w_mf)
         liczba_brakujacych = len(do_pobrania_teraz)
@@ -459,8 +454,8 @@ elif aktywna_zakladka.startswith("2."):
         st.info(f"Odnaleziono łącznie: **{laczna_liczba_orzeczen}** interpretacji zgłoszonych w bazie dla wskazanego okresu.")
         st.write(f"Do fizycznego pobrania i sprawdzenia w tej sesji pozostało: **{liczba_brakujacych}** dokumentów.")
         
-        if puzzle_count := liczba_brakujacych == 0:
-            status_tekst.success("✔️ Pula wyczerpana. Wszystkie orzeczenia są w cache. Wygeneruj plik Word.")
+        if liczba_brakujacych == 0:
+            status_tekst.success("✔️ Wszystkie znalezione orzeczenia (lub odrzucone przez brak PDF w MF) są obsłużone. Wygeneruj plik Word.")
             log_szczegolowy.empty()
             st.stop()
 
@@ -491,7 +486,6 @@ elif aktywna_zakladka.startswith("2."):
                     konfiguracja_m2["uszkodzone_id"].append(dok["id"])
                     licznik_uszkodzonych_w_sesji += 1
                 else:
-                    # WYWOŁANIE BLOKADY SYSTEMOWEJ - ZAPIS STANU I STRONA OCHRONNA NA 5 MINUT
                     st.session_state['lockout_active_m2'] = True
                     st.session_state['lockout_start_m2'] = time.time()
                     zapisz_pelne_tresci(PLIK_REKORDOW_M2, aktualne_tresci_m2)
@@ -507,7 +501,7 @@ elif aktywna_zakladka.startswith("2."):
             pasek_postepu.progress((idx + 1) / liczba_brakujacych)
             time.sleep(random.uniform(1.5, 2.5))
 
-        status_tekst.success(f"🎉 SUKCES! Pobrano {licznik_pobranych_w_sesji} plików, a {licznik_uszkodzonych_w_sesji} odrzucono.")
+        status_tekst.success(f"🎉 SUKCES! Zakończono sprawdzanie {liczba_brakujacych} plików. Skrypt pomyślnie zgrał {licznik_pobranych_w_sesji} dokumentów.")
         log_szczegolowy.empty()
         st.balloons()
         time.sleep(4)
