@@ -132,7 +132,6 @@ def szukaj_w_api_mf(data_start_str, data_koniec_str, fraza, sesja, nazwa_podatku
 
 # --- 5. FUNKCJE API (MODUŁ 2: ŚCIĄGACZ) ---
 def pobierz_wszystko_z_dnia(data_str, sesja, nazwa_podatku, kod_sygnatury):
-    """Pobiera wszystkie interpretacje z konkretnego dnia, bez słów kluczowych"""
     payload = {
         "filter": {"KATEGORIA_INFORMACJI": [1], "DT_WYD_start": data_str, "DT_WYD_end": data_str},
         "columns": ["SYG", "ID_INFORMACJI", "DT_WYD"],
@@ -168,21 +167,34 @@ def pobierz_wszystko_z_dnia(data_str, sesja, nazwa_podatku, kod_sygnatury):
     return [], "OK"
 
 
-# --- 6. PANEL NAWIGACYJNY ---
+# --- 6. LEWY PANEL NAWIGACYJNY (ZNAZWY MODUŁÓW) ---
 st.sidebar.title("📌 Menu PickPivot")
 st.sidebar.markdown("---")
-aktywna_zakladka = st.sidebar.radio("Wybierz moduł platformy:", ["1", "2", "3", "4", "5", "6"])
+
+# ZMIANA: Moduły mają teraz pełne, profesjonalne nazwy w interfejsie
+aktywna_zakladka = st.sidebar.radio(
+    "Wybierz moduł platformy:",
+    [
+        "1. Radar Orzecznictwa",
+        "2. Ściągacz Interpretacji",
+        "3. Generator Pism (W przyszłości)",
+        "4. Panel Analityczny (W przyszłości)",
+        "5. Historia Pobierania (W przyszłości)",
+        "6. Ustawienia Systemu (W przyszłości)"
+    ]
+)
+
 st.sidebar.markdown("---")
-st.sidebar.caption("© 2026 PickPivot v8.0")
+st.sidebar.caption("© 2026 PickPivot v8.1")
 
 # --- 7. LOGIKA MODUŁÓW ---
 
-if aktywna_zakladka == "1":
+if aktywna_zakladka.startswith("1."):
     # ==========================================
     # MODUŁ 1: RADAR ORZECZNICTWA
     # ==========================================
     st.title("⚡ PickPivot: Radar Orzecznictwa")
-    st.markdown("Wersja zoptymalizowana. Wyszukuje interpretacje po słowach kluczowych i synonimach.")
+    st.markdown("Wyszukuje interpretacje podatkowe na podstawie zdefiniowanych słów kluczowych oraz synonimów.")
 
     konfiguracja = wczytaj_historie(PLIK_KONFIGURACJI_M1)
     przetworzone_id = set(konfiguracja.get("przetworzone_id", []))
@@ -190,7 +202,7 @@ if aktywna_zakladka == "1":
     pelne_tresci_cache = wczytaj_pelne_tresci(PLIK_REKORDOW_M1)
 
     if pelne_tresci_cache:
-        st.success(f"💾 BAZA DANYCH RADARU: Zabezpieczono {len(pelne_tresci_cache)} orzeczeń.")
+        st.success(f"💾 BAZA DANYCH RADARU: Zabezpieczono {len(pelne_tresci_cache)} orzeczeń o pełnej treści.")
         colA, colB = st.columns(2)
         with colA:
             if st.button("📄 GENERUJ RAPORT WORD (.docx)", use_container_width=True, type="primary"):
@@ -215,13 +227,13 @@ if aktywna_zakladka == "1":
         st.markdown("---")
 
     col1, col2, col3 = st.columns(3)
-    with col1: wybrane_lata = st.multiselect("Lata:", [2024, 2025, 2026])
-    with col2: wybrane_miesiace = st.multiselect("Miesiące:", list(range(1, 13)))
-    with col3: wybrane_podatki_ui = st.multiselect("Podatki:", ["CIT", "VAT", "AKCYZA"])
+    with col1: wybrane_lata = st.multiselect("Wybierz lata:", [2024, 2025, 2026])
+    with col2: wybrane_miesiace = st.multiselect("Wybierz miesiące:", list(range(1, 13)))
+    with col3: wybrane_podatki_ui = st.multiselect("Rodzaj podatku:", ["CIT", "VAT", "AKCYZA"])
 
     if st.button("🚀 Uruchom skanowanie słów kluczowych", use_container_width=True):
         if not wybrane_lata or not wybrane_miesiace or not wybrane_podatki_ui:
-            st.error("Wybierz parametry.")
+            st.error("Proszę wybrać parametry.")
             st.stop()
             
         pasek_postepu = st.progress(0)
@@ -266,38 +278,37 @@ if aktywna_zakladka == "1":
                             zapisz_historie(PLIK_KONFIGURACJI_M1, konfiguracja)
                             zapytania_wykonane += 1
                             pasek_postepu.progress(min(1.0, zapytania_wykonane / calkowita_liczba_zapytan))
-                            time.sleep(0.2)
+                            time.sleep(0.1)
                             
         status_tekst.success(f"🎉 Zakończono! Zebrano {licznik_trafien} dokumentów.")
         st.balloons()
         time.sleep(3)
         st.rerun()
 
-elif aktywna_zakladka == "2":
+elif aktywna_zakladka.startswith("2."):
     # ==========================================
     # MODUŁ 2: ŚCIĄGACZ INTERPRETACJI (BULK)
     # ==========================================
-    st.title("📦 Ściągacz Interpretacji")
-    st.markdown("Kompleksowe pobieranie wszystkich wydanych interpretacji z wybranego okresu i podatku (bez filtrowania słów kluczowych). Idealne do budowy własnego archiwum.")
+    st.title("📦 Ściągacz Interpretacji (Pobieranie Zbiorcze)")
+    st.markdown("Pobiera **wszystkie** interpretacje indywidualne z wybranego okresu (bez filtrów słów kluczowych) i łączy je w jeden plik.")
 
     konfiguracja_m2 = wczytaj_historie(PLIK_KONFIGURACJI_M2)
     przetworzone_id_m2 = set(konfiguracja_m2.get("przetworzone_id", []))
-    ukonczone_dni_m2 = set(konfiguracja_m2.get("ukonczone_kombinacje", []))
     pelne_tresci_m2 = wczytaj_pelne_tresci(PLIK_REKORDOW_M2)
 
     if pelne_tresci_m2:
-        st.success(f"💾 BAZA ŚCIĄGACZA: Zgromadzono do tej pory {len(pelne_tresci_m2)} dokumentów.")
+        st.success(f"💾 BAZA ŚCIĄGACZA: W pamięci podręcznej serwera znajduje się obecnie {len(pelne_tresci_m2)} zabezpieczonych dokumentów.")
         colA, colB = st.columns(2)
         with colA:
             if st.button("📄 GENERUJ ARCHIWUM WORD (.docx)", use_container_width=True, type="primary"):
-                with st.spinner("Składanie obszernego dokumentu..."):
+                with st.spinner("Składanie dokumentu... Może to chwilę potrwać przy dużych zbiorach danych..."):
                     doc = Document()
                     doc.add_heading('Kompleksowe Archiwum Orzecznictwa', 0)
                     for rekord in pelne_tresci_m2:
                         doc.add_heading(f"Sygnatura: {rekord['Sygnatura']}", level=1)
                         doc.add_paragraph(f"Data: {rekord['Data']} | Podatek: {rekord['Podatek']}")
-                        doc.add_paragraph(f"Link: {rekord['Link']}")
-                        doc.add_heading("Treść:", level=2)
+                        doc.add_paragraph(f"Link źródłowy: {rekord['Link']}")
+                        doc.add_heading("Pełna treść interpretacji:", level=2)
                         doc.add_paragraph(wyczysc_tekst_dla_worda(rekord['Tekst']))
                         doc.add_page_break()
                     output = io.BytesIO()
@@ -310,21 +321,20 @@ elif aktywna_zakladka == "2":
         st.markdown("---")
 
     col1, col2, col3 = st.columns(3)
-    with col1: wybrane_lata_m2 = st.multiselect("Lata:", [2024, 2025, 2026], key="latam2")
-    with col2: wybrane_miesiace_m2 = st.multiselect("Miesiące:", list(range(1, 13)), key="miesm2")
-    with col3: wybrane_podatki_ui_m2 = st.multiselect("Podatki:", ["CIT", "VAT", "AKCYZA"], key="podm2")
+    with col1: wybrane_lata_m2 = st.multiselect("Wybierz lata:", [2024, 2025, 2026], key="latam2")
+    with col2: wybrane_miesiace_m2 = st.multiselect("Wybierz miesiące:", list(range(1, 13)), key="miesm2")
+    with col3: wybrane_podatki_ui_m2 = st.multiselect("Rodzaj podatku:", ["CIT", "VAT", "AKCYZA"], key="podm2")
 
     if st.button("🚀 Uruchom kompleksowe pobieranie", use_container_width=True):
         if not wybrane_lata_m2 or not wybrane_miesiace_m2 or not wybrane_podatki_ui_m2:
-            st.error("Proszę wybrać parametry.")
+            st.error("Proszę wybrać parametry wejściowe.")
             st.stop()
 
         dzisiaj = date.today()
-        pasek_postepu = st.progress(0)
         status_tekst = st.empty()
         log_szczegolowy = st.empty()
         
-        # Obliczanie dni do sprawdzenia
+        # Przygotowanie pełnej listy dni objętych zapytaniem
         lista_dni_do_sprawdzenia = []
         for rok in wybrane_lata_m2:
             for miesiac in wybrane_miesiace_m2:
@@ -334,55 +344,77 @@ elif aktywna_zakladka == "2":
                     if aktualna_data <= dzisiaj:
                         lista_dni_do_sprawdzenia.append(aktualna_data.strftime('%Y-%m-%d'))
 
-        calkowita_liczba_krokow = len(lista_dni_do_sprawdzenia) * len(wybrane_podatki_ui_m2)
-        kroki_wykonane = 0
-        licznik_nowych = 0
+        # --- FAZA 1: SZYBKI SKAN METADANYCH (KONTROLA ILOŚCI) ---
+        status_tekst.info("🔍 Krok 1/2: Odpytuję serwery MF o łączną liczbę dokumentów dla wybranego okresu...")
+        
+        wszystkie_orzeczenia_w_mf = []
+        do_pobrania_teraz = []
 
         with requests.Session() as sesja_bazy:
             for data_str in lista_dni_do_sprawdzenia:
                 for podatek in wybrane_podatki_ui_m2:
-                    
-                    klucz_kombinacji = f"M2_{data_str}_{podatek}"
-                    if klucz_kombinacji in ukonczone_dni_m2:
-                        kroki_wykonane += 1
-                        continue
-                        
-                    status_tekst.info(f"Pobieranie puli z dnia: {data_str} (Podatek: {podatek})...")
+                    log_szczegolowy.text(f"Pobieranie indeksu z dnia: {data_str} dla podatku {podatek}...")
                     lista_trafien, _ = pobierz_wszystko_z_dnia(data_str, sesja_bazy, podatek, KODY_PODATKOW[podatek])
                     
-                    if lista_trafien:
-                        aktualne_tresci = wczytaj_pelne_tresci(PLIK_REKORDOW_M2)
-                        for dok in lista_trafien:
-                            if dok["id"] not in przetworzone_id_m2:
-                                log_szczegolowy.text(f"Zapisywanie dokumentu: {dok['sygnatura']}...")
-                                tekst = pobierz_tekst_pdf(dok["id"])
-                                if tekst:
-                                    aktualne_tresci.append({
-                                        "Data": dok["data"], "Podatek": dok["typ"], "Sygnatura": dok["sygnatura"],
-                                        "Link": PODGLAD_URL.format(id=dok["id"]), "Tekst": tekst
-                                    })
-                                    przetworzone_id_m2.add(dok["id"])
-                                    konfiguracja_m2["przetworzone_id"].append(dok["id"])
-                                    licznik_nowych += 1
-                        zapisz_pelne_tresci(PLIK_REKORDOW_M2, aktualne_tresci)
+                    for dok in lista_trafien:
+                        wszystkie_orzeczenia_w_mf.append(dok)
+                        if dok["id"] not in przetworzone_id_m2:
+                            do_pobrania_teraz.append(dok)
 
-                    ukonczone_dni_m2.add(klucz_kombinacji)
-                    konfiguracja_m2["ukonczone_kombinacje"].append(klucz_kombinacji)
-                    zapisz_historie(PLIK_KONFIGURACJI_M2, konfiguracja_m2)
-                    
-                    kroki_wykonane += 1
-                    pasek_postepu.progress(min(1.0, kroki_wykonane / calkowita_liczba_krokow))
-                    time.sleep(0.2)
+        laczna_liczba_orzeczen = len(wszystkie_orzeczenia_w_mf)
+        liczba_brakujacych = len(do_pobrania_teraz)
 
-        status_tekst.success(f"🎉 Zakończono! Pobrano {licznik_nowych} nowych dokumentów.")
+        # ZMIANA: Natychmiastowe pokazanie użytkownikowi łącznej liczby elementów w bazie rządowej
+        st.markdown(f"### 📊 Wynik analizy wstępnej okresu:")
+        st.info(f"W bazie Ministerstwa Finansów znajduje się łącznie: **{laczna_liczba_orzeczen}** interpretacji dla wybranych parametrów.")
+        st.write(f"Do pobrania pozostało: **{liczba_brakujacych}** nowych dokumentów (reszta znajduje się już w bezpiecznym cache serwera).")
+        
+        if liczba_brakujacych == 0:
+            status_tekst.success("✔️ Wszystkie dokumenty z tego okresu są już pobrane i gotowe do wygenerowania pliku Word!")
+            log_szczegolowy.empty()
+            st.stop()
+
+        time.sleep(3)
+
+        # --- FAZA 2: ITERACYJNE POBIERANIE Z LICZNIKIEM KONTROLNYM ---
+        status_tekst.info(f"⏳ Krok 2/2: Pobieranie pełnych treści dokumentów (0 / {liczba_brakujacych})...")
+        pasek_postepu = st.progress(0)
+        
+        licznik_pobranych_w_sesji = 0
+        aktualne_tresci_m2 = wczytaj_pelne_tresci(PLIK_REKORDOW_M2)
+
+        for idx, dok in enumerate(do_pobrania_teraz):
+            log_szczegolowy.text(f"Pobieram plik ({idx+1}/{liczba_brakujacych}): {dok['sygnatura']}...")
+            
+            tekst = pobierz_tekst_pdf(dok["id"])
+            if tekst:
+                aktualne_tresci_m2.append({
+                    "Data": dok["data"],
+                    "Podatek": dok["typ"],
+                    "Sygnatura": dok["sygnatura"],
+                    "Link": PODGLAD_URL.format(id=dok["id"]),
+                    "Tekst": tekst
+                })
+                przetworzone_id_m2.add(dok["id"])
+                konfiguracja_m2["przetworzone_id"].append(dok["id"])
+                licznik_pobranych_w_sesji += 1
+                
+                # Zapis sukcesywny po każdym pliku zapobiega utracie danych przy zerwaniu sesji
+                zapisz_pelne_tresci(PLIK_REKORDOW_M2, aktualne_tresci_m2)
+                zapisz_historie(PLIK_KONFIGURACJI_M2, konfiguracja_m2)
+
+            # Aktualizacja statusu, dająca użytkownikowi fizyczną kontrolę nad procesem
+            status_tekst.info(f"⏳ Pobrano i scalono {licznik_pobranych_w_sesji} z {liczba_brakujacych} brakujących plików (Łączna pula w bazie: {len(aktualne_tresci_m2)} z {laczna_liczba_orzeczen} istniejących).")
+            pasek_postepu.progress((idx + 1) / liczba_brakujacych)
+            time.sleep(random.uniform(0.1, 0.2))
+
+        # Komunikat ostateczny z pełnym podsumowaniem matematycznym
+        status_tekst.success(f"🎉 Sukces! Oficjalna łączna liczba interpretacji w tym okresie wynosiła {laczna_liczba_orzeczen}. System pomyślnie zgrał i zabezpieczył w pliku {len(aktualne_tresci_m2)} z nich.")
         log_szczegolowy.empty()
         st.balloons()
-        time.sleep(3)
+        time.sleep(4)
         st.rerun()
 
 else:
-    # ==========================================
-    # MODUŁY 3, 4, 5, 6
-    # ==========================================
     st.title(f"🛠️ Moduł {aktywna_zakladka}")
     st.info("Ta funkcjonalność jest obecnie w fazie projektowania i zostanie dodana w przyszłości.", icon="ℹ️")
