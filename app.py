@@ -19,7 +19,6 @@ st.set_page_config(page_title="PickPivot Platform", page_icon="⚡", layout="wid
 if 'authenticated' not in st.session_state:
     st.session_state['authenticated'] = False
 
-# Jeśli użytkownik nie jest zalogowany, wyświetlamy wyłącznie formularz logowania
 if not st.session_state['authenticated']:
     st.markdown("<br><br>", unsafe_allow_html=True)
     col_login, _ = st.columns([1, 2])
@@ -39,10 +38,9 @@ if not st.session_state['authenticated']:
                 st.rerun()
             else:
                 st.error("Wprowadzono niepoprawny login lub hasło.")
-                
-    st.stop() # Blokada: zatrzymuje wykonywanie jakiegokolwiek kodu poniżej dla niezalogowanych
+    st.stop() 
 
-# --- 3. KONFIGURACJA ŚRODOWISKA BOTA (Dla zalogowanych) ---
+# --- 3. KONFIGURACJA ŚRODOWISKA BOTA ---
 FOLDER_DOCELOWY = 'PickPivot_Data'
 if not os.path.exists(FOLDER_DOCELOWY):
     os.makedirs(FOLDER_DOCELOWY)
@@ -213,7 +211,7 @@ def pobierz_wszystko_z_okresu(data_start_str, data_koniec_str, sesja, nazwa_poda
 
 # --- 6. LEWY PANEL NAWIGACYJNY (SIDEBAR) ---
 st.sidebar.title("📌 Menu PickPivot")
-st.sidebar.markdown(f"Zalogowany jako: **{username if 'username' in locals() else 'DORADCA'}**")
+st.sidebar.markdown(f"Zalogowany jako: **DORADCA**")
 
 aktywna_zakladka = st.sidebar.radio(
     "Wybierz moduł platformy:",
@@ -233,7 +231,7 @@ if st.sidebar.button("🚪 Wyloguj się", use_container_width=True):
     st.rerun()
 
 st.sidebar.markdown("---")
-st.sidebar.caption("© 2026 PickPivot v10.0 Secure")
+st.sidebar.caption("© 2026 PickPivot v10.1 Secure")
 
 # --- 7. LOGIKA MODUŁÓW ---
 
@@ -336,16 +334,47 @@ elif aktywna_zakladka.startswith("2."):
     st.title("📦 Ściągacz Interpretacji (Pobieranie Zbiorcze)")
     st.markdown("Pobiera **wszystkie** interpretacje indywidualne z wybranego okresu i łączy je w jeden plik Word.")
 
+    # --- NOWOŚĆ: AKTYWNY EKRAN BLOKADY SIECIOWEJ (ANTY-BAN) ---
+    if st.session_state.get('lockout_active_m2', False):
+        st.markdown("<br><br>", unsafe_allow_html=True)
+        st.error("🔒 SYSTEM OCHRONY PRZED BANEM: Wykryto twardą blokadę sieciową serwera MF.")
+        st.info("Aplikacja została tymczasowo zawieszona na 5 minut, aby zresetować połączenie i chronić Twoje IP przed trwałą blokadą.")
+        
+        elapsed = time.time() - st.session_state.get('lockout_start_m2', 0)
+        if elapsed < 300:
+            # Pętla licznika na żywo
+            countdown_placeholder = st.empty()
+            while elapsed < 300:
+                remaining = int(300 - elapsed)
+                mins, secs = divmod(remaining, 60)
+                countdown_placeholder.markdown(f"<h2 style='text-align: center; color: #ff4b4b;'>⏳ Czas do automatycznego odblokowania platformy: {mins:02d}:{secs:02d}</h2>", unsafe_allow_html=True)
+                time.sleep(1)
+                elapsed = time.time() - st.session_state.get('lockout_start_m2', 0)
+            st.rerun()
+        else:
+            # Okres 5 minut minął - wyświetlamy guzik idealnie na środku strony
+            st.success("🎉 Czas oczekiwania minął pomyślnie! Urzędowe limity zostały zresetowane.")
+            st.markdown("<br><br>", unsafe_allow_html=True)
+            col_l, col_m, col_r = st.columns([1, 2, 1])
+            with col_m:
+                # Żądany przycisk na środku ekranu
+                if st.button("▶️ WZNÓW PRZERWANE POBIERANIE", use_container_width=True, type="primary"):
+                    st.session_state['lockout_active_m2'] = False
+                    st.session_state['auto_resume_m2'] = True # Flaga automatycznego startu pętli
+                    st.rerun()
+            st.stop() # Blokuje renderowanie reszty strony pod spodem podczas ekranu gotowości
+
+    # Regularny widok Ściągacza
     konfiguracja_m2 = wczytaj_historie(PLIK_KONFIGURACJI_M2)
     przetworzone_id_m2 = set(konfiguracja_m2.get("przetworzone_id", []))
     uszkodzone_id_m2 = set(konfiguracja_m2.get("uszkodzone_id", []))
     pelne_tresci_m2 = wczytaj_pelne_tresci(PLIK_REKORDOW_M2)
 
     if pelne_tresci_m2 or uszkodzone_id_m2:
-        st.success(f"💾 BAZA ŚCIĄGACZA: W pamięci podręcznej serwera zabezpieczono {len(pelne_tresci_m2)} dokumentów. Zignorowano {len(uszkodzone_id_m2)} trwale uszkodzonych/pustych rekordów w MF.")
+        st.success(f"💾 BAZA ŚCIĄGACZA: W pamięci podręcznej serwera zabezpieczono {len(pelne_tresci_m2)} dokumentów. Zignorowano {len(uszkodzone_id_m2)} pustych rekordów.")
         if pelne_tresci_m2:
             if st.button("📄 GENERUJ ARCHIWUM WORD (.docx)", use_container_width=True, type="primary"):
-                with st.spinner("Składanie dokumentu... Może to chwilę potrwać przy dużych zbiorach danych..."):
+                with st.spinner("Składanie dokumentu..."):
                     doc = Document()
                     doc.add_heading('Kompleksowe Archiwum Orzecznictwa', 0)
                     for rekord in pelne_tresci_m2:
@@ -372,10 +401,24 @@ elif aktywna_zakladka.startswith("2."):
     with col_btn2:
         btn_od_nowa = st.button("🔄 Pobierz całkowicie od nowa (Wyczyść pamięć)", use_container_width=True)
 
-    if btn_wznow or btn_od_nowa:
-        if not wybrane_lata_m2 or not wybrane_miesiace_m2 or not wybrane_podatki_ui_m2:
-            st.error("Proszę wybrać parametry wejściowe.")
-            st.stop()
+    # Uruchomienie pętli pobierania na skutek kliknięcia LUB automatycznego wznowienia po odliczeniu 5 minut
+    run_loop = btn_wznow or btn_od_nowa or st.session_state.get('auto_resume_m2', False)
+
+    if run_loop:
+        # Odzyskiwanie parametrów po odblokowaniu ekranu ochronnego
+        if st.session_state.get('auto_resume_m2', False):
+            wybrane_lata_m2 = st.session_state.get('saved_lata_m2', [])
+            wybrane_miesiace_m2 = st.session_state.get('saved_mies_m2', [])
+            wybrane_podatki_ui_m2 = st.session_state.get('saved_pod_m2', [])
+            st.session_state['auto_resume_m2'] = False
+        else:
+            if not wybrane_lata_m2 or not wybrane_miesiace_m2 or not wybrane_podatki_ui_m2:
+                st.error("Proszę wybrać parametry wejściowe.")
+                st.stop()
+            # Zabezpieczenie parametrów w pamięci chmury (nie znikną podczas ukrycia widgetów UI)
+            st.session_state['saved_lata_m2'] = wybrane_lata_m2
+            st.session_state['saved_mies_m2'] = wybrane_miesiace_m2
+            st.session_state['saved_pod_m2'] = wybrane_podatki_ui_m2
 
         if btn_od_nowa:
             wyczysc_dane_serwera(PLIK_KONFIGURACJI_M2, PLIK_REKORDOW_M2)
@@ -388,7 +431,7 @@ elif aktywna_zakladka.startswith("2."):
         status_tekst = st.empty()
         log_szczegolowy = st.empty()
 
-        status_tekst.info("🔍 Krok 1/2: Analizuję całe miesiące. Zliczam oficjalną pulę dokumentów MF...")
+        status_tekst.info("🔍 Krok 1/2: Analizuję całe miesiące przedziałami. Zliczam oficjalną pulę dokumentów MF...")
         
         wszystkie_orzeczenia_w_mf = []
         do_pobrania_teraz = []
@@ -416,14 +459,14 @@ elif aktywna_zakladka.startswith("2."):
         st.info(f"Odnaleziono łącznie: **{laczna_liczba_orzeczen}** interpretacji zgłoszonych w bazie dla wskazanego okresu.")
         st.write(f"Do fizycznego pobrania i sprawdzenia w tej sesji pozostało: **{liczba_brakujacych}** dokumentów.")
         
-        if liczba_brakujacych == 0:
-            status_tekst.success("✔️ Pula wyczerpana. Dokumenty zostały pobrane lub odrzucone jako uszkodzone przez MF. Wygeneruj plik Word.")
+        if puzzle_count := liczba_brakujacych == 0:
+            status_tekst.success("✔️ Pula wyczerpana. Wszystkie orzeczenia są w cache. Wygeneruj plik Word.")
             log_szczegolowy.empty()
             st.stop()
 
-        time.sleep(3)
+        time.sleep(2)
 
-        status_tekst.info(f"⏳ Krok 2/2: Fizyczne pobieranie plików z serwerów MF (0 / {liczba_brakujacych})...")
+        status_tekst.info(f"⏳ Krok 2/2: Pobieranie plików z serwerów MF (0 / {liczba_brakujacych})...")
         pasek_postepu = st.progress(0)
         
         licznik_pobranych_w_sesji = 0
@@ -447,12 +490,15 @@ elif aktywna_zakladka.startswith("2."):
                     uszkodzone_id_m2.add(dok["id"])
                     konfiguracja_m2["uszkodzone_id"].append(dok["id"])
                     licznik_uszkodzonych_w_sesji += 1
-                    log_szczegolowy.text(f"⚠️ Odrzucono {dok['sygnatura']}: Brak załącznika PDF na serwerach MF.")
                 else:
-                    st.error(f"❌ TWARDA BLOKADA SIECI SERWERA MF. Pobrane {licznik_pobranych_w_sesji} plików zostało bezpiecznie zapisanych. Odczekaj 5 minut i kliknij 'Wznów pobieranie'.")
+                    # WYWOŁANIE BLOKADY SYSTEMOWEJ - ZAPIS STANU I STRONA OCHRONNA NA 5 MINUT
+                    st.session_state['lockout_active_m2'] = True
+                    st.session_state['lockout_start_m2'] = time.time()
                     zapisz_pelne_tresci(PLIK_REKORDOW_M2, aktualne_tresci_m2)
                     zapisz_historie(PLIK_KONFIGURACJI_M2, konfiguracja_m2)
-                    st.stop()
+                    st.toast("⚠️ Wykryto blokadę! Zabezpieczam dane i aktywuję śluzę ochronną.")
+                    time.sleep(1)
+                    st.rerun()
                 
             zapisz_pelne_tresci(PLIK_REKORDOW_M2, aktualne_tresci_m2)
             zapisz_historie(PLIK_KONFIGURACJI_M2, konfiguracja_m2)
@@ -461,10 +507,10 @@ elif aktywna_zakladka.startswith("2."):
             pasek_postepu.progress((idx + 1) / liczba_brakujacych)
             time.sleep(random.uniform(1.5, 2.5))
 
-        status_tekst.success(f"🎉 SUKCES! Sprawdzono {liczba_brakujacych} plików. Skrypt pomyślnie zgrał {licznik_pobranych_w_sesji} dokumentów i wykrył {licznik_uszkodzonych_w_sesji} pustych rekordów w MF.")
+        status_tekst.success(f"🎉 SUKCES! Pobrano {licznik_pobranych_w_sesji} plików, a {licznik_uszkodzonych_w_sesji} odrzucono.")
         log_szczegolowy.empty()
         st.balloons()
-        time.sleep(5)
+        time.sleep(4)
         st.rerun()
 
 else:
