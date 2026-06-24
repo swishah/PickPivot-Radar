@@ -20,15 +20,12 @@ FOLDER_DOCELOWY = 'PickPivot_Data'
 if not os.path.exists(FOLDER_DOCELOWY):
     os.makedirs(FOLDER_DOCELOWY)
 
-# Pliki dla Modułu 1 (Radar)
 PLIK_KONFIGURACJI_M1 = f"{FOLDER_DOCELOWY}/historia_m1.json"
 PLIK_REKORDOW_M1 = f"{FOLDER_DOCELOWY}/baza_tresci_m1.json"
 
-# Pliki dla Modułu 2 (Ściągacz)
 PLIK_KONFIGURACJI_M2 = f"{FOLDER_DOCELOWY}/historia_m2.json"
 PLIK_REKORDOW_M2 = f"{FOLDER_DOCELOWY}/baza_tresci_m2.json"
 
-# BAZOWY ADRES URL Z PAGINACJĄ (Pobieranie stron)
 SEARCH_API_URL_BASE = "https://eureka.mf.gov.pl/api/public/v1/wyszukiwarka/informacje/?size=100&page={page}&sort=parametryPozycjonowania%2Casc"
 PDF_API_URL = "https://eureka.mf.gov.pl/api/public/v1/informacje/{id}/eksport/pdf"
 PODGLAD_URL = "https://eureka.mf.gov.pl/informacje/podglad/{id}"
@@ -49,8 +46,12 @@ KODY_PODATKOW = {
 def wczytaj_historie(plik):
     if os.path.exists(plik):
         with open(plik, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    return {"przetworzone_id": [], "ukonczone_kombinacje": []}
+            dane = json.load(f)
+            # Dodane pole uszkodzone_id dla odporności bazy
+            if "uszkodzone_id" not in dane:
+                dane["uszkodzone_id"] = []
+            return dane
+    return {"przetworzone_id": [], "ukonczone_kombinacje": [], "uszkodzone_id": []}
 
 def zapisz_historie(plik, konfiguracja):
     with open(plik, 'w', encoding='utf-8') as f:
@@ -76,29 +77,40 @@ def wyczysc_tekst_dla_worda(tekst):
     if not tekst: return ""
     return re.sub(r'[^\x09\x0A\x0D\x20-\x7E\x85\xA0-\uD7FF\uE000-\uFFFD\u10000-\u10FFFF]', '', tekst)
 
+# Niezwykle odporna funkcja pobierająca z wbudowanym systemem Retry i diagnostyką
 def pobierz_tekst_pdf(id_dokumentu):
     url = PDF_API_URL.format(id=id_dokumentu)
     headers_pdf = {"User-Agent": "Mozilla/5.0", "Referer": "https://eureka.mf.gov.pl/"}
-    try:
-        response = requests.get(url, headers=headers_pdf, timeout=15)
-        if response.status_code == 200:
-            plik_w_pamieci = io.BytesIO(response.content)
-            tekst_dokumentu = ""
-            reader = PyPDF2.PdfReader(plik_w_pamieci)
-            for strona in reader.pages:
-                wyc = strona.extract_text()
-                if wyc: tekst_dokumentu += wyc + "\n"
-            return tekst_dokumentu
-    except:
-        return None
-    return None
+    
+    for proba in range(3):
+        try:
+            response = requests.get(url, headers=headers_pdf, timeout=20)
+            if response.status_code == 200:
+                plik_w_pamieci = io.BytesIO(response.content)
+                tekst_dokumentu = ""
+                try:
+                    reader = PyPDF2.PdfReader(plik_w_pamieci)
+                    for strona in reader.pages:
+                        wyc = strona.extract_text()
+                        if wyc: tekst_dokumentu += wyc + "\n"
+                    return tekst_dokumentu, "OK"
+                except:
+                    return None, "BŁĄD_CZYTANIA"
+            elif response.status_code in [404, 400]:
+                return None, "BRAK_PLIKU"
+            elif response.status_code == 429:
+                time.sleep(5) # Odczekanie kary za rate-limiting
+            else:
+                time.sleep(2)
+        except:
+            time.sleep(3) # Przerwa na stabilizację łącza
+            
+    return None, "BLOKADA"
 
 # --- 4. FUNKCJE API Z PAGINACJĄ (BEZ LIMITU 100 WYNIKÓW) ---
 def szukaj_w_api_mf(data_start_str, data_koniec_str, fraza, sesja, nazwa_podatku, kod_sygnatury):
-    """Zoptymalizowane wyszukiwanie dla Radaru (Moduł 1) - pobiera całe miesiące z obsługą paginacji"""
     dokumenty_podatkowe = []
     page = 0
-    
     while True:
         url = SEARCH_API_URL_BASE.format(page=page)
         payload = {
@@ -108,21 +120,17 @@ def szukaj_w_api_mf(data_start_str, data_koniec_str, fraza, sesja, nazwa_podatku
             "searchInFullPhrase": False, "searchInContent": True, "searchInSynonyms": True, "warunkiDodatkowe": []
         }
         headers = {"User-Agent": "Mozilla/5.0", "Content-Type": "application/json"}
-        
         try:
             response = sesja.post(url, json=payload, headers=headers, timeout=12)
             if response.status_code == 200:
                 dane = response.json()
                 wyniki = dane.get('content') or dane.get('items') or []
-                
-                # Jeśli serwer przesłał puste wyniki w innej strukturze
                 if not wyniki:
                     for k, v in dane.items():
                         if isinstance(v, list) and len(v) > 0 and isinstance(v[0], dict):
                             if 'id' in v[0] or 'ID_INFORMACJI' in v[0]:
                                 wyniki = v
                                 break
-                
                 for d in wyniki:
                     sygnatura = str(d.get('SYG', '')).upper()
                     data_wydania = str(d.get('DT_WYD', '')).split('T')[0]
@@ -131,26 +139,21 @@ def szukaj_w_api_mf(data_start_str, data_koniec_str, fraza, sesja, nazwa_podatku
                         if doc_id:
                             dokumenty_podatkowe.append({"id": doc_id, "sygnatura": sygnatura, "typ": nazwa_podatku, "data": data_wydania})
                 
-                # Przerywamy pętlę, jeśli na tej stronie było mniej niż 100 wyników (koniec danych)
                 if len(wyniki) < 100:
                     break
                 page += 1
-                time.sleep(0.2) # Krótka przerwa między stronami wewnątrz MF
+                time.sleep(0.2) 
             else:
                 return dokumenty_podatkowe, "ERROR"
         except requests.exceptions.Timeout:
             return dokumenty_podatkowe, "TIMEOUT"
         except:
             return dokumenty_podatkowe, "ERROR"
-            
     return dokumenty_podatkowe, "OK"
 
-
 def pobierz_wszystko_z_okresu(data_start_str, data_koniec_str, sesja, nazwa_podatku, kod_sygnatury):
-    """Kompleksowe wyszukiwanie dla Ściągacza (Moduł 2) - cały miesiąc na raz z przewijaniem stron"""
     dokumenty_podatkowe = []
     page = 0
-    
     while True:
         url = SEARCH_API_URL_BASE.format(page=page)
         payload = {
@@ -159,20 +162,17 @@ def pobierz_wszystko_z_okresu(data_start_str, data_koniec_str, sesja, nazwa_poda
             "searchInFullPhrase": False, "searchInContent": False, "searchInSynonyms": False, "warunkiDodatkowe": []
         }
         headers = {"User-Agent": "Mozilla/5.0", "Content-Type": "application/json"}
-        
         try:
             response = sesja.post(url, json=payload, headers=headers, timeout=15)
             if response.status_code == 200:
                 dane = response.json()
                 wyniki = dane.get('content') or dane.get('items') or []
-                
                 if not wyniki:
                     for k, v in dane.items():
                         if isinstance(v, list) and len(v) > 0 and isinstance(v[0], dict):
                             if 'id' in v[0] or 'ID_INFORMACJI' in v[0]:
                                 wyniki = v
                                 break
-                                
                 for d in wyniki:
                     sygnatura = str(d.get('SYG', '')).upper()
                     data_wydania = str(d.get('DT_WYD', '')).split('T')[0]
@@ -181,7 +181,6 @@ def pobierz_wszystko_z_okresu(data_start_str, data_koniec_str, sesja, nazwa_poda
                         if doc_id:
                             dokumenty_podatkowe.append({"id": doc_id, "sygnatura": sygnatura, "typ": nazwa_podatku, "data": data_wydania})
                 
-                # Automatyczna paginacja
                 if len(wyniki) < 100:
                     break
                 page += 1
@@ -192,9 +191,7 @@ def pobierz_wszystko_z_okresu(data_start_str, data_koniec_str, sesja, nazwa_poda
             return dokumenty_podatkowe, "TIMEOUT"
         except:
             return dokumenty_podatkowe, "ERROR"
-            
     return dokumenty_podatkowe, "OK"
-
 
 # --- 5. LEWY PANEL NAWIGACYJNY ---
 st.sidebar.title("📌 Menu PickPivot")
@@ -213,7 +210,7 @@ aktywna_zakladka = st.sidebar.radio(
 )
 
 st.sidebar.markdown("---")
-st.sidebar.caption("© 2026 PickPivot v9.0 (Dynamic Pagination)")
+st.sidebar.caption("© 2026 PickPivot v9.1 (System Anty-Ban)")
 
 # --- 6. LOGIKA MODUŁÓW ---
 
@@ -290,7 +287,7 @@ if aktywna_zakladka.startswith("1."):
                                 aktualne_tresci = wczytaj_pelne_tresci(PLIK_REKORDOW_M1)
                                 for dok in lista_trafien:
                                     if dok["id"] not in przetworzone_id:
-                                        tekst = pobierz_tekst_pdf(dok["id"])
+                                        tekst, status_pobrania = pobierz_tekst_pdf(dok["id"])
                                         if tekst:
                                             aktualne_tresci.append({
                                                 "Data": dok["data"], "Podatek": dok["typ"], "Sygnatura": dok["sygnatura"],
@@ -321,24 +318,26 @@ elif aktywna_zakladka.startswith("2."):
 
     konfiguracja_m2 = wczytaj_historie(PLIK_KONFIGURACJI_M2)
     przetworzone_id_m2 = set(konfiguracja_m2.get("przetworzone_id", []))
+    uszkodzone_id_m2 = set(konfiguracja_m2.get("uszkodzone_id", []))
     pelne_tresci_m2 = wczytaj_pelne_tresci(PLIK_REKORDOW_M2)
 
-    if pelne_tresci_m2:
-        st.success(f"💾 BAZA ŚCIĄGACZA: W pamięci podręcznej serwera znajduje się obecnie {len(pelne_tresci_m2)} zabezpieczonych dokumentów.")
-        if st.button("📄 GENERUJ ARCHIWUM WORD (.docx)", use_container_width=True, type="primary"):
-            with st.spinner("Składanie dokumentu... Może to chwilę potrwać przy dużych zbiorach danych..."):
-                doc = Document()
-                doc.add_heading('Kompleksowe Archiwum Orzecznictwa', 0)
-                for rekord in pelne_tresci_m2:
-                    doc.add_heading(f"Sygnatura: {rekord['Sygnatura']}", level=1)
-                    doc.add_paragraph(f"Data: {rekord['Data']} | Podatek: {rekord['Podatek']}")
-                    doc.add_paragraph(f"Link źródłowy: {rekord['Link']}")
-                    doc.add_heading("Pełna treść interpretacji:", level=2)
-                    doc.add_paragraph(wyczysc_tekst_dla_worda(rekord['Tekst']))
-                    doc.add_page_break()
-                output = io.BytesIO()
-                doc.save(output)
-                st.download_button("📥 Pobierz Archiwum", data=output.getvalue(), file_name=f"Archiwum_Zrzut_{datetime.now().strftime('%Y%m%d')}.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", use_container_width=True)
+    if pelne_tresci_m2 or uszkodzone_id_m2:
+        st.success(f"💾 BAZA ŚCIĄGACZA: W pamięci podręcznej serwera zabezpieczono {len(pelne_tresci_m2)} dokumentów. Zignorowano {len(uszkodzone_id_m2)} trwale uszkodzonych/pustych rekordów w MF.")
+        if pelne_tresci_m2:
+            if st.button("📄 GENERUJ ARCHIWUM WORD (.docx)", use_container_width=True, type="primary"):
+                with st.spinner("Składanie dokumentu... Może to chwilę potrwać przy dużych zbiorach danych..."):
+                    doc = Document()
+                    doc.add_heading('Kompleksowe Archiwum Orzecznictwa', 0)
+                    for rekord in pelne_tresci_m2:
+                        doc.add_heading(f"Sygnatura: {rekord['Sygnatura']}", level=1)
+                        doc.add_paragraph(f"Data: {rekord['Data']} | Podatek: {rekord['Podatek']}")
+                        doc.add_paragraph(f"Link źródłowy: {rekord['Link']}")
+                        doc.add_heading("Pełna treść interpretacji:", level=2)
+                        doc.add_paragraph(wyczysc_tekst_dla_worda(rekord['Tekst']))
+                        doc.add_page_break()
+                    output = io.BytesIO()
+                    doc.save(output)
+                    st.download_button("📥 Pobierz Archiwum", data=output.getvalue(), file_name=f"Archiwum_Zrzut_{datetime.now().strftime('%Y%m%d')}.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", use_container_width=True)
         st.markdown("---")
 
     col1, col2, col3 = st.columns(3)
@@ -358,19 +357,19 @@ elif aktywna_zakladka.startswith("2."):
             st.error("Proszę wybrać parametry wejściowe.")
             st.stop()
 
-        # Czyszczenie na życzenie użytkownika
+        # Czyszczenie pamięci na żądanie
         if btn_od_nowa:
             wyczysc_dane_serwera(PLIK_KONFIGURACJI_M2, PLIK_REKORDOW_M2)
-            konfiguracja_m2 = {"przetworzone_id": [], "ukonczone_kombinacje": []}
+            konfiguracja_m2 = {"przetworzone_id": [], "ukonczone_kombinacje": [], "uszkodzone_id": []}
             przetworzone_id_m2 = set()
+            uszkodzone_id_m2 = set()
             pelne_tresci_m2 = []
             st.toast("🧹 Pamięć wyczyszczona. Rozpoczynam od zera.")
 
         status_tekst = st.empty()
         log_szczegolowy = st.empty()
 
-        # --- FAZA 1: SZYBKI SKAN METADANYCH ORAZ ZLICZANIE (MIESIĄCAMI) ---
-        status_tekst.info("🔍 Krok 1/2: Analizuję całe miesiące. Pobieram indeks i zliczam oficjalną pulę Ministerstwa Finansów...")
+        status_tekst.info("🔍 Krok 1/2: Analizuję całe miesiące. Zliczam oficjalną pulę dokumentów MF...")
         
         wszystkie_orzeczenia_w_mf = []
         do_pobrania_teraz = []
@@ -383,41 +382,40 @@ elif aktywna_zakladka.startswith("2."):
                     data_koniec_str = f"{rok}-{miesiac:02d}-{ost_dzien:02d}"
                     
                     for podatek in wybrane_podatki_ui_m2:
-                        log_szczegolowy.text(f"Liczenie bazy z całego przedziału: {data_start_str} - {data_koniec_str} ({podatek})...")
+                        log_szczegolowy.text(f"Zliczanie z przedziału: {data_start_str} - {data_koniec_str} ({podatek})...")
                         
-                        # Pobiera całe pule dla danego podatku i całego miesiąca naraz z obsługą paginacji
                         lista_trafien, _ = pobierz_wszystko_z_okresu(data_start_str, data_koniec_str, sesja_bazy, podatek, KODY_PODATKOW[podatek])
                         
                         for dok in lista_trafien:
                             wszystkie_orzeczenia_w_mf.append(dok)
-                            if dok["id"] not in przetworzone_id_m2:
+                            if dok["id"] not in przetworzone_id_m2 and dok["id"] not in uszkodzone_id_m2:
                                 do_pobrania_teraz.append(dok)
 
         laczna_liczba_orzeczen = len(wszystkie_orzeczenia_w_mf)
         liczba_brakujacych = len(do_pobrania_teraz)
 
         st.markdown(f"### 📊 Raport przedstartowy:")
-        st.info(f"Odnaleziono łącznie: **{laczna_liczba_orzeczen}** wystawionych interpretacji dla wskazanego przedziału czasowego i podatków.")
-        st.write(f"Do pobrania i scalenia pozostało: **{liczba_brakujacych}** dokumentów.")
+        st.info(f"Odnaleziono łącznie: **{laczna_liczba_orzeczen}** interpretacji zgłoszonych w bazie dla wskazanego okresu.")
+        st.write(f"Do fizycznego pobrania i sprawdzenia w tej sesji pozostało: **{liczba_brakujacych}** dokumentów.")
         
         if liczba_brakujacych == 0:
-            status_tekst.success("✔️ Wszystkie dokumenty z tego okresu są już bezpiecznie zapisane. Kliknij przycisk Generuj u góry!")
+            status_tekst.success("✔️ Pula wyczerpana. Dokumenty zostały pobrane lub odrzucone jako uszkodzone przez MF. Wygeneruj plik Word.")
             log_szczegolowy.empty()
             st.stop()
 
         time.sleep(3)
 
-        # --- FAZA 2: FAKTYCZNE POBIERANIE DOKUMENTÓW (PDF -> TEXT) ---
-        status_tekst.info(f"⏳ Krok 2/2: Pobieranie fizycznych plików i czytanie treści (0 / {liczba_brakujacych})...")
+        status_tekst.info(f"⏳ Krok 2/2: Fizyczne pobieranie plików z serwerów MF (0 / {liczba_brakujacych})...")
         pasek_postepu = st.progress(0)
         
         licznik_pobranych_w_sesji = 0
+        licznik_uszkodzonych_w_sesji = 0
         aktualne_tresci_m2 = wczytaj_pelne_tresci(PLIK_REKORDOW_M2)
 
         for idx, dok in enumerate(do_pobrania_teraz):
             log_szczegolowy.text(f"Pobieram plik ({idx+1}/{liczba_brakujacych}): {dok['sygnatura']}...")
             
-            tekst = pobierz_tekst_pdf(dok["id"])
+            tekst, status_pobr = pobierz_tekst_pdf(dok["id"])
             if tekst:
                 aktualne_tresci_m2.append({
                     "Data": dok["data"],
@@ -429,23 +427,34 @@ elif aktywna_zakladka.startswith("2."):
                 przetworzone_id_m2.add(dok["id"])
                 konfiguracja_m2["przetworzone_id"].append(dok["id"])
                 licznik_pobranych_w_sesji += 1
+            else:
+                # Weryfikacja powodu błędu
+                if status_pobr in ["BRAK_PLIKU", "BŁĄD_CZYTANIA"]:
+                    uszkodzone_id_m2.add(dok["id"])
+                    konfiguracja_m2["uszkodzone_id"].append(dok["id"])
+                    licznik_uszkodzonych_w_sesji += 1
+                    log_szczegolowy.text(f"⚠️ Odrzucono {dok['sygnatura']}: MF nie dołączyło PDF-a lub jest uszkodzony.")
+                else:
+                    st.error(f"❌ TWARDA BLOKADA SIECI. Serwer MF zablokował dostęp przy dokumencie {dok['sygnatura']}. Pobrane {licznik_pobranych_w_sesji} plików zostało zapisanych. Przerwij pracę, odczekaj 5-10 minut i uruchom ponownie wybierając 'Wznów pobieranie'.")
+                    zapisz_pelne_tresci(PLIK_REKORDOW_M2, aktualne_tresci_m2)
+                    zapisz_historie(PLIK_KONFIGURACJI_M2, konfiguracja_m2)
+                    st.stop()
                 
-                zapisz_pelne_tresci(PLIK_REKORDOW_M2, aktualne_tresci_m2)
-                zapisz_historie(PLIK_KONFIGURACJI_M2, konfiguracja_m2)
+            zapisz_pelne_tresci(PLIK_REKORDOW_M2, aktualne_tresci_m2)
+            zapisz_historie(PLIK_KONFIGURACJI_M2, konfiguracja_m2)
 
-            status_tekst.info(f"⏳ Pobrano i scalono {licznik_pobranych_w_sesji} z {liczba_brakujacych} dokumentów (Łączna pula to obecnie: {len(aktualne_tresci_m2)} z {laczna_liczba_orzeczen}).")
+            status_tekst.info(f"⏳ Zabezpieczono {licznik_pobranych_w_sesji} | Puste w MF: {licznik_uszkodzonych_w_sesji} | Zostało: {liczba_brakujacych - (idx + 1)}")
             pasek_postepu.progress((idx + 1) / liczba_brakujacych)
-            time.sleep(random.uniform(0.1, 0.2))
+            
+            # Kluczowa zmiana: spowolnienie tempa do prędkości "ludzkiej", chroniące przed blokadą IP
+            time.sleep(random.uniform(1.5, 2.5))
 
-        status_tekst.success(f"🎉 SUKCES! Zweryfikowana, oficjalna łączna liczba to {laczna_liczba_orzeczen} interpretacji. System posiada wyizolowaną i połączoną treść z {len(aktualne_tresci_m2)} z nich.")
+        status_tekst.success(f"🎉 SUKCES! Zakończono sprawdzanie {liczba_brakujacych} plików. Skrypt pomyślnie zgrał {licznik_pobranych_w_sesji} dokumentów i napotkał {licznik_uszkodzonych_w_sesji} braków bazodanowych w MF.")
         log_szczegolowy.empty()
         st.balloons()
-        time.sleep(4)
+        time.sleep(5)
         st.rerun()
 
 else:
-    # ==========================================
-    # MODUŁY PUSTE
-    # ==========================================
     st.title(f"🛠️ {aktywna_zakladka}")
     st.info("Ta funkcjonalność jest obecnie w fazie projektowania i zostanie dodana w przyszłości.", icon="ℹ️")
