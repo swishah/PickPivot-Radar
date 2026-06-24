@@ -12,10 +12,37 @@ import pandas as pd
 from datetime import datetime, date
 from docx import Document
 
-# --- 1. USTAWIENIA STRONY ---
+# --- 1. USTAWIENIA STRONY (Muszą być na samym początku) ---
 st.set_page_config(page_title="PickPivot Platform", page_icon="⚡", layout="wide")
 
-# --- 2. KONFIGURACJA ŚRODOWISKA BOTA ---
+# --- 2. SYSTEM LOGOWANIA (ZABEZPIECZENIE) ---
+if 'authenticated' not in st.session_state:
+    st.session_state['authenticated'] = False
+
+# Jeśli użytkownik nie jest zalogowany, wyświetlamy wyłącznie formularz logowania
+if not st.session_state['authenticated']:
+    st.markdown("<br><br>", unsafe_allow_html=True)
+    col_login, _ = st.columns([1, 2])
+    
+    with col_login:
+        st.title("🔐 Panel PickPivot")
+        st.markdown("Dostęp do platformy jest szyfrowany i wymaga autoryzacji.")
+        
+        username = st.text_input("Login (Nazwa użytkownika):")
+        password = st.text_input("Hasło:", type="password")
+        
+        if st.button("🚀 Zaloguj się", use_container_width=True, type="primary"):
+            if username == "DORADCA" and password == "kontotestowe413":
+                st.session_state['authenticated'] = True
+                st.success("Autoryzacja pomyślna! Ładowanie platformy...")
+                time.sleep(1)
+                st.rerun()
+            else:
+                st.error("Wprowadzono niepoprawny login lub hasło.")
+                
+    st.stop() # Blokada: zatrzymuje wykonywanie jakiegokolwiek kodu poniżej dla niezalogowanych
+
+# --- 3. KONFIGURACJA ŚRODOWISKA BOTA (Dla zalogowanych) ---
 FOLDER_DOCELOWY = 'PickPivot_Data'
 if not os.path.exists(FOLDER_DOCELOWY):
     os.makedirs(FOLDER_DOCELOWY)
@@ -42,16 +69,15 @@ KODY_PODATKOW = {
     "AKCYZA": ".4013."
 }
 
-# --- 3. UNIWERSALNE FUNKCJE PAMIĘCI I UTILS ---
+# --- 4. UNIWERSALNE FUNKCJE PAMIĘCI I UTILS ---
 def wczytaj_historie(plik):
     if os.path.exists(plik):
         with open(plik, 'r', encoding='utf-8') as f:
             dane = json.load(f)
-            # Dodane pole uszkodzone_id dla odporności bazy
             if "uszkodzone_id" not in dane:
                 dane["uszkodzone_id"] = []
             return dane
-    return {"przetworzone_id": [], "ukonczone_kombinacje": [], "uszkodzone_id": []}
+    return {"przetworzone_id": [], "ukonczone_kombinacje": []}
 
 def zapisz_historie(plik, konfiguracja):
     with open(plik, 'w', encoding='utf-8') as f:
@@ -77,37 +103,31 @@ def wyczysc_tekst_dla_worda(tekst):
     if not tekst: return ""
     return re.sub(r'[^\x09\x0A\x0D\x20-\x7E\x85\xA0-\uD7FF\uE000-\uFFFD\u10000-\u10FFFF]', '', tekst)
 
-# Niezwykle odporna funkcja pobierająca z wbudowanym systemem Retry i diagnostyką
 def pobierz_tekst_pdf(id_dokumentu):
     url = PDF_API_URL.format(id=id_dokumentu)
     headers_pdf = {"User-Agent": "Mozilla/5.0", "Referer": "https://eureka.mf.gov.pl/"}
-    
     for proba in range(3):
         try:
             response = requests.get(url, headers=headers_pdf, timeout=20)
             if response.status_code == 200:
                 plik_w_pamieci = io.BytesIO(response.content)
                 tekst_dokumentu = ""
-                try:
-                    reader = PyPDF2.PdfReader(plik_w_pamieci)
-                    for strona in reader.pages:
-                        wyc = strona.extract_text()
-                        if wyc: tekst_dokumentu += wyc + "\n"
-                    return tekst_dokumentu, "OK"
-                except:
-                    return None, "BŁĄD_CZYTANIA"
+                reader = PyPDF2.PdfReader(plik_w_pamieci)
+                for strona in reader.pages:
+                    wyc = strona.extract_text()
+                    if wyc: tekst_dokumentu += wyc + "\n"
+                return tekst_dokumentu, "OK"
             elif response.status_code in [404, 400]:
                 return None, "BRAK_PLIKU"
             elif response.status_code == 429:
-                time.sleep(5) # Odczekanie kary za rate-limiting
+                time.sleep(5)
             else:
                 time.sleep(2)
         except:
-            time.sleep(3) # Przerwa na stabilizację łącza
-            
+            time.sleep(3)
     return None, "BLOKADA"
 
-# --- 4. FUNKCJE API Z PAGINACJĄ (BEZ LIMITU 100 WYNIKÓW) ---
+# --- 5. FUNKCJE API Z PAGINACJĄ ---
 def szukaj_w_api_mf(data_start_str, data_koniec_str, fraza, sesja, nazwa_podatku, kod_sygnatury):
     dokumenty_podatkowe = []
     page = 0
@@ -138,11 +158,10 @@ def szukaj_w_api_mf(data_start_str, data_koniec_str, fraza, sesja, nazwa_podatku
                         doc_id = str(d.get('id') or d.get('ID_INFORMACJI'))
                         if doc_id:
                             dokumenty_podatkowe.append({"id": doc_id, "sygnatura": sygnatura, "typ": nazwa_podatku, "data": data_wydania})
-                
                 if len(wyniki) < 100:
                     break
                 page += 1
-                time.sleep(0.2) 
+                time.sleep(0.2)
             else:
                 return dokumenty_podatkowe, "ERROR"
         except requests.exceptions.Timeout:
@@ -180,7 +199,6 @@ def pobierz_wszystko_z_okresu(data_start_str, data_koniec_str, sesja, nazwa_poda
                         doc_id = str(d.get('id') or d.get('ID_INFORMACJI'))
                         if doc_id:
                             dokumenty_podatkowe.append({"id": doc_id, "sygnatura": sygnatura, "typ": nazwa_podatku, "data": data_wydania})
-                
                 if len(wyniki) < 100:
                     break
                 page += 1
@@ -193,9 +211,9 @@ def pobierz_wszystko_z_okresu(data_start_str, data_koniec_str, sesja, nazwa_poda
             return dokumenty_podatkowe, "ERROR"
     return dokumenty_podatkowe, "OK"
 
-# --- 5. LEWY PANEL NAWIGACYJNY ---
+# --- 6. LEWY PANEL NAWIGACYJNY (SIDEBAR) ---
 st.sidebar.title("📌 Menu PickPivot")
-st.sidebar.markdown("---")
+st.sidebar.markdown(f"Zalogowany jako: **{username if 'username' in locals() else 'DORADCA'}**")
 
 aktywna_zakladka = st.sidebar.radio(
     "Wybierz moduł platformy:",
@@ -210,14 +228,16 @@ aktywna_zakladka = st.sidebar.radio(
 )
 
 st.sidebar.markdown("---")
-st.sidebar.caption("© 2026 PickPivot v9.1 (System Anty-Ban)")
+if st.sidebar.button("🚪 Wyloguj się", use_container_width=True):
+    st.session_state['authenticated'] = False
+    st.rerun()
 
-# --- 6. LOGIKA MODUŁÓW ---
+st.sidebar.markdown("---")
+st.sidebar.caption("© 2026 PickPivot v10.0 Secure")
+
+# --- 7. LOGIKA MODUŁÓW ---
 
 if aktywna_zakladka.startswith("1."):
-    # ==========================================
-    # MODUŁ 1: RADAR ORZECZNICTWA
-    # ==========================================
     st.title("⚡ PickPivot: Radar Orzecznictwa")
     st.markdown("Wyszukuje interpretacje podatkowe na podstawie zdefiniowanych słów kluczowych oraz synonimów.")
 
@@ -357,7 +377,6 @@ elif aktywna_zakladka.startswith("2."):
             st.error("Proszę wybrać parametry wejściowe.")
             st.stop()
 
-        # Czyszczenie pamięci na żądanie
         if btn_od_nowa:
             wyczysc_dane_serwera(PLIK_KONFIGURACJI_M2, PLIK_REKORDOW_M2)
             konfiguracja_m2 = {"przetworzone_id": [], "ukonczone_kombinacje": [], "uszkodzone_id": []}
@@ -383,7 +402,6 @@ elif aktywna_zakladka.startswith("2."):
                     
                     for podatek in wybrane_podatki_ui_m2:
                         log_szczegolowy.text(f"Zliczanie z przedziału: {data_start_str} - {data_koniec_str} ({podatek})...")
-                        
                         lista_trafien, _ = pobierz_wszystko_z_okresu(data_start_str, data_koniec_str, sesja_bazy, podatek, KODY_PODATKOW[podatek])
                         
                         for dok in lista_trafien:
@@ -418,24 +436,20 @@ elif aktywna_zakladka.startswith("2."):
             tekst, status_pobr = pobierz_tekst_pdf(dok["id"])
             if tekst:
                 aktualne_tresci_m2.append({
-                    "Data": dok["data"],
-                    "Podatek": dok["typ"],
-                    "Sygnatura": dok["sygnatura"],
-                    "Link": PODGLAD_URL.format(id=dok["id"]),
-                    "Tekst": tekst
+                    "Data": dok["data"], "Podatek": dok["typ"], "Sygnatura": dok["sygnatura"],
+                    "Link": PODGLAD_URL.format(id=dok["id"]), "Tekst": tekst
                 })
                 przetworzone_id_m2.add(dok["id"])
                 konfiguracja_m2["przetworzone_id"].append(dok["id"])
                 licznik_pobranych_w_sesji += 1
             else:
-                # Weryfikacja powodu błędu
                 if status_pobr in ["BRAK_PLIKU", "BŁĄD_CZYTANIA"]:
                     uszkodzone_id_m2.add(dok["id"])
                     konfiguracja_m2["uszkodzone_id"].append(dok["id"])
                     licznik_uszkodzonych_w_sesji += 1
-                    log_szczegolowy.text(f"⚠️ Odrzucono {dok['sygnatura']}: MF nie dołączyło PDF-a lub jest uszkodzony.")
+                    log_szczegolowy.text(f"⚠️ Odrzucono {dok['sygnatura']}: Brak załącznika PDF na serwerach MF.")
                 else:
-                    st.error(f"❌ TWARDA BLOKADA SIECI. Serwer MF zablokował dostęp przy dokumencie {dok['sygnatura']}. Pobrane {licznik_pobranych_w_sesji} plików zostało zapisanych. Przerwij pracę, odczekaj 5-10 minut i uruchom ponownie wybierając 'Wznów pobieranie'.")
+                    st.error(f"❌ TWARDA BLOKADA SIECI SERWERA MF. Pobrane {licznik_pobranych_w_sesji} plików zostało bezpiecznie zapisanych. Odczekaj 5 minut i kliknij 'Wznów pobieranie'.")
                     zapisz_pelne_tresci(PLIK_REKORDOW_M2, aktualne_tresci_m2)
                     zapisz_historie(PLIK_KONFIGURACJI_M2, konfiguracja_m2)
                     st.stop()
@@ -445,11 +459,9 @@ elif aktywna_zakladka.startswith("2."):
 
             status_tekst.info(f"⏳ Zabezpieczono {licznik_pobranych_w_sesji} | Puste w MF: {licznik_uszkodzonych_w_sesji} | Zostało: {liczba_brakujacych - (idx + 1)}")
             pasek_postepu.progress((idx + 1) / liczba_brakujacych)
-            
-            # Kluczowa zmiana: spowolnienie tempa do prędkości "ludzkiej", chroniące przed blokadą IP
             time.sleep(random.uniform(1.5, 2.5))
 
-        status_tekst.success(f"🎉 SUKCES! Zakończono sprawdzanie {liczba_brakujacych} plików. Skrypt pomyślnie zgrał {licznik_pobranych_w_sesji} dokumentów i napotkał {licznik_uszkodzonych_w_sesji} braków bazodanowych w MF.")
+        status_tekst.success(f"🎉 SUKCES! Sprawdzono {liczba_brakujacych} plików. Skrypt pomyślnie zgrał {licznik_pobranych_w_sesji} dokumentów i wykrył {licznik_uszkodzonych_w_sesji} pustych rekordów w MF.")
         log_szczegolowy.empty()
         st.balloons()
         time.sleep(5)
