@@ -24,17 +24,18 @@ SEARCH_API_URL = "https://eureka.mf.gov.pl/api/public/v1/wyszukiwarka/informacje
 PDF_API_URL = "https://eureka.mf.gov.pl/api/public/v1/informacje/{id}/eksport/pdf"
 PODGLAD_URL = "https://eureka.mf.gov.pl/informacje/podglad/{id}"
 
+# Czysta, zwięzła lista fraz. EUREKA użyje algorytmu synonimów do łapania ich odmian.
 FRAZY_KLUCZOWE = [
-    "sieć ciepłownicza", "sieci ciepłowniczej", "sieci ciepłownicze", "sieciami ciepłowniczymi",
-    "przebudowa sieci", "przebudowy sieci", "przebudowie sieci",
-    "przyłącze", "przyłącza", "przyłączy", "przyłączem", "przyłączu",
-    "węzeł cieplny", "węzła cieplnego", "węzły cieplne", "węzłach cieplnych",
-    "taryfa dla ciepła", "taryfy dla ciepła", "taryf dla ciepła",
-    "wodociąg", "wodociągu", "wodociągi", "wodociągów", "wodociągowa", "wodociągowej", "wodociągowych",
-    "kanalizacja", "kanalizacji", "kanalizacyjna", "kanalizcznej", "kanalizacyjnych",
-    "oczyszczalnia ścieków", "oczyszczalni ścieków", "ścieki", "ścieków",
-    "stacja uzdatniania", "stacji uzdatniania",
-    "spółka komunalna", "spółki komunalnej", "spółek komunalnych", "spółkom komunalnym"
+    "sieć ciepłownicza",
+    "przebudowa sieci",
+    "przyłącze",
+    "węzeł cieplny",
+    "taryfa dla ciepła",
+    "wodociąg",
+    "kanalizacja",
+    "oczyszczalnia ścieków",
+    "stacja uzdatniania",
+    "spółka komunalna"
 ]
 
 KODY_PODATKOW = {
@@ -77,22 +78,21 @@ def wyczysc_tekst_dla_worda(tekst):
     if not tekst: return ""
     return re.sub(r'[^\x09\x0A\x0D\x20-\x7E\x85\xA0-\uD7FF\uE000-\uFFFD\u10000-\u10FFFF]', '', tekst)
 
-# --- 4. FUNKCJE API ---
-def szukaj_w_api_mf_strikt(data_start_str, data_koniec_str, fraza, sesja, nazwa_podatku, kod_sygnatury):
+# --- 4. FUNKCJE API: USTAWIENIA ZGODNE Z INTERFEJSEM UŻYTKOWNIKA ---
+def szukaj_w_api_mf(data_start_str, data_koniec_str, fraza, sesja, nazwa_podatku, kod_sygnatury):
     payload = {
         "query": fraza,
         "filter": {"KATEGORIA_INFORMACJI": [1], "DT_WYD_start": data_start_str, "DT_WYD_end": data_koniec_str},
         "columns": ["SYG", "ID_INFORMACJI", "DT_WYD"],
-        "searchInFullPhrase": True, 
-        "searchInContent": True,    
-        "searchInSynonyms": False,
+        "searchInFullPhrase": False, # Odpowiada: "Wyszukaj słowa niezależnie od umiejscowienia"
+        "searchInContent": False,    # Odpowiada: Odznaczonemu "Szukaj tylko w treści"
+        "searchInSynonyms": True,    # Odpowiada: Zaznaczonemu "Szukaj również po synonimach"
         "warunkiDodatkowe": []
     }
     headers = {"User-Agent": "Mozilla/5.0", "Content-Type": "application/json", "Origin": "https://eureka.mf.gov.pl"}
     
     try:
-        # Zabezpieczenie czasowe: max 7 sekund na odpowiedź strukturalną
-        response = sesja.post(SEARCH_API_URL, json=payload, headers=headers, timeout=7)
+        response = sesja.post(SEARCH_API_URL, json=payload, headers=headers, timeout=10)
         if response.status_code == 200:
             dane = response.json()
             wyniki = dane.get('content') or dane.get('items') or []
@@ -124,8 +124,7 @@ def pobierz_pelny_tekst_pypdf(id_dokumentu):
     headers_pdf = {"User-Agent": "Mozilla/5.0", "Referer": "https://eureka.mf.gov.pl/"}
     
     try:
-        # Maksymalnie 10 sekund na pobranie fizycznego pliku tekstowego
-        response = requests.get(url, headers=headers_pdf, timeout=10)
+        response = requests.get(url, headers=headers_pdf, timeout=15)
         if response.status_code == 200:
             plik_w_pamieci = io.BytesIO(response.content)
             tekst_dokumentu = ""
@@ -143,12 +142,12 @@ st.sidebar.title("📌 Menu PickPivot")
 st.sidebar.markdown("---")
 aktywna_zakladka = st.sidebar.radio("Wybierz moduł platformy:", ["1", "2", "3", "4", "5", "6"])
 st.sidebar.markdown("---")
-st.sidebar.caption("© 2026 PickPivot v6.2")
+st.sidebar.caption("© 2026 PickPivot v6.3 (Ustawienia Interfejsu EUREKA)")
 
-# --- 6. GŁÓWNY EKRAN OPRUCOWANIA ---
+# --- 6. GŁÓWNY EKRAN ---
 if aktywna_zakladka == "1":
     st.title("⚡ PickPivot: Niezawodny Radar Orzecznictwa")
-    st.markdown("Monitorowanie postępów w czasie rzeczywistym. Pełna odporność na zawieszenia sieciowe.")
+    st.markdown("Wersja z ustawieniami skanowania odwzorowującymi interfejs graficzny Ministerstwa Finansów (Aktywne synonimy).")
 
     konfiguracja = wczytaj_historie()
     przetworzone_id = set(konfiguracja.get("przetworzone_id", []))
@@ -156,7 +155,7 @@ if aktywna_zakladka == "1":
     pelne_tresci_cache = wczytaj_pelne_tresci()
 
     if pelne_tresci_cache:
-        st.success(f"💾 BAZA DANYCH: W pamięci podręcznej zabezpieczono {len(pelne_tresci_cache)} unikalnych orzeczeń.")
+        st.success(f"💾 BAZA DANYCH: W pamięci zabezpieczono {len(pelne_tresci_cache)} unikalnych orzeczeń.")
         colA, colB = st.columns(2)
         with colA:
             if st.button("📄 GENERUJ I POBIERZ RAPORT WORD (.docx)", use_container_width=True, type="primary"):
@@ -170,7 +169,7 @@ if aktywna_zakladka == "1":
                         doc.add_paragraph(f"Podatek: {rekord['Podatek']}")
                         
                         p_fraza = doc.add_paragraph()
-                        p_fraza.add_run("Wykryte słowo kluczowe: ").bold = True
+                        p_fraza.add_run("Baza powiązała interpretację z frazą: ").bold = True
                         p_fraza.add_run(f"{rekord['Słowo kluczowe']}")
                         
                         doc.add_paragraph(f"Link źródłowy: {rekord['Link']}")
@@ -205,7 +204,7 @@ if aktywna_zakladka == "1":
     with col3:
         wybrane_podatki_ui = st.multiselect("Rodzaj podatku:", ["CIT", "VAT", "AKCYZA"])
 
-    if st.button("🚀 Uruchom szybkie skanowanie sekwencyjne", use_container_width=True):
+    if st.button("🚀 Uruchom skanowanie z ustawieniami niestandardowymi", use_container_width=True):
         if not wybrane_lata or not wybrane_miesiace or not wybrane_podatki_ui:
             st.error("Proszę wybrać komplet parametrów.")
             st.stop()
@@ -213,7 +212,6 @@ if aktywna_zakladka == "1":
         dzisiaj = date.today()
         pasek_postepu = st.progress(0)
         
-        # INICJALIZACJA MATRYCY POSTĘPU NA EKRANIE
         st.markdown("### 📊 Stan wyszukiwania słów kluczowych na żywo")
         macierz_danych = {"Fraza kluczowa": FRAZY_KLUCZOWE}
         for p in wybrane_podatki_ui:
@@ -246,16 +244,15 @@ if aktywna_zakladka == "1":
                                 zapytania_wykonane += 1
                                 continue
                             
-                            # Zmiana statusu komórki na "Skanowanie"
                             df_postepu.at[idx_fraza, podatek] = "🔍 Skanowanie..."
                             widok_tabeli.dataframe(df_postepu, use_container_width=True, hide_index=True)
                             
-                            status_tekst.text(f"Aktualnie odpytuję serwer o: {fraza} ({podatek}) dla okresu {miesiac:02d}/{rok}")
+                            status_tekst.text(f"Aktywne odpytywanie API (synonimy aktywne): {fraza} ({podatek}) dla {miesiac:02d}/{rok}")
                             
-                            lista_trafien, stan_sieci = szukaj_w_api_mf_strikt(data_start_str, data_koniec_str, fraza, sesja_bazy, podatek, KODY_PODATKOW[podatek])
+                            lista_trafien, stan_sieci = szukaj_w_api_mf(data_start_str, data_koniec_str, fraza, sesja_bazy, podatek, KODY_PODATKOW[podatek])
                             
                             if stan_sieci == "TIMEOUT" or stan_sieci == "ERROR":
-                                df_postepu.at[idx_fraza, podatek] = "⚠️ Brak odpowiedzi serwera"
+                                df_postepu.at[idx_fraza, podatek] = "⚠️ Brak odpowiedzi"
                                 widok_tabeli.dataframe(df_postepu, use_container_width=True, hide_index=True)
                             elif lista_trafien:
                                 aktualne_tresci = wczytaj_pelne_tresci()
@@ -299,7 +296,7 @@ if aktywna_zakladka == "1":
                             
                             time.sleep(random.uniform(0.1, 0.3))
 
-        status_tekst.success(f"🎉 WSZYSTKIE WYSZUKIWANIA ZOSTAŁY ZAKOŃCZONE! Zebrano łącznie {licznik_trafien} unikalnych interpretacji.")
+        status_tekst.success(f"🎉 SKANOWANIE ZAKOŃCZONE! Zebrano {licznik_trafien} trafnych interpretacji zgodnie z Twoimi filtrami.")
         st.balloons()
         time.sleep(4)
         st.rerun()
