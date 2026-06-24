@@ -8,7 +8,6 @@ import calendar
 import json
 import os
 import re
-import pandas as pd
 from datetime import datetime, date
 from docx import Document
 
@@ -24,19 +23,20 @@ SEARCH_API_URL = "https://eureka.mf.gov.pl/api/public/v1/wyszukiwarka/informacje
 PDF_API_URL = "https://eureka.mf.gov.pl/api/public/v1/informacje/{id}/eksport/pdf"
 PODGLAD_URL = "https://eureka.mf.gov.pl/informacje/podglad/{id}"
 
-# Słownik dwustopniowy: KLUCZ to fraza wysyłana do MF, WARTOŚĆ to rdzeń weryfikowany przez Pythona
-SLOWNIK_WYSZUKIWANIA = {
-    "sieć ciepłownicza": "ciepłownicz",
-    "przebudowa sieci": "przebudow",
-    "przyłącze": "przyłącz",
-    "węzeł cieplny": "węzeł ciepl",
-    "taryfa dla ciepła": "taryf",
-    "wodociąg": "wodociąg",
-    "kanalizacja": "kanalizac",
-    "oczyszczalnia ścieków": "ściek",
-    "stacja uzdatniania": "uzdatnian",
-    "spółka komunalna": "komunaln"
-}
+# EKSPERCKA LISTA FRAZ: Pełne, najczęściej występujące odmiany gramatyczne.
+# Dzięki "searchInFullPhrase: True" serwer MF filtruje je błyskawicznie bez pobierania PDF-ów.
+FRAZY_KLUCZOWE = [
+    "sieć ciepłownicza", "sieci ciepłowniczej", "sieci ciepłownicze", "sieciami ciepłowniczymi",
+    "przebudowa sieci", "przebudowy sieci", "przebudowie sieci",
+    "przyłącze", "przyłącza", "przyłączy", "przyłączem", "przyłączu",
+    "węzeł cieplny", "węzła cieplnego", "węzły cieplne", "węzłach cieplnych",
+    "taryfa dla ciepła", "taryfy dla ciepła", "taryf dla ciepła",
+    "wodociąg", "wodociągu", "wodociągi", "wodociągów", "wodociągowa", "wodociągowej", "wodociągowych",
+    "kanalizacja", "kanalizacji", "kanalizacyjna", "kanalizacyjnej", "kanalizacyjnych",
+    "oczyszczalnia ścieków", "oczyszczalni ścieków", "ścieki", "ścieków",
+    "stacja uzdatniania", "stacji uzdatniania",
+    "spółka komunalna", "spółki komunalnej", "spółek komunalnych", "spółkom komunalnym"
+]
 
 KODY_PODATKOW = {
     "CIT": ".4010.",
@@ -79,13 +79,12 @@ def wyczysc_tekst_dla_worda(tekst):
     return re.sub(r'[^\x09\x0A\x0D\x20-\x7E\x85\xA0-\uD7FF\uE000-\uFFFD\u10000-\u10FFFF]', '', tekst)
 
 # --- 4. FUNKCJE API ---
-def szukaj_szeroko_w_api_mf(data_start_str, data_koniec_str, pelna_fraza, sesja, nazwa_podatku, kod_sygnatury):
-    """Krok 1: Szerokie wyszukiwanie pełnej frazy przez serwer MF"""
+def szukaj_w_api_mf_strikt(data_start_str, data_koniec_str, fraza, sesja, nazwa_podatku, kod_sygnatury):
     payload = {
-        "query": pelna_fraza,
+        "query": fraza,
         "filter": {"KATEGORIA_INFORMACJI": [1], "DT_WYD_start": data_start_str, "DT_WYD_end": data_koniec_str},
         "columns": ["SYG", "ID_INFORMACJI", "DT_WYD"],
-        "searchInFullPhrase": False, # Zmieniono na False, by EUREKA łapała szerszy kontekst
+        "searchInFullPhrase": True, # KLUCZ DO SZYBKOŚCI: Szukamy tylko dokładnych dopasowań form gramatycznych
         "searchInContent": True,    
         "searchInSynonyms": False,
         "warunkiDodatkowe": []
@@ -94,7 +93,7 @@ def szukaj_szeroko_w_api_mf(data_start_str, data_koniec_str, pelna_fraza, sesja,
     
     for _ in range(3):
         try:
-            response = sesja.post(SEARCH_API_URL, json=payload, headers=headers, timeout=45)
+            response = sesja.post(SEARCH_API_URL, json=payload, headers=headers, timeout=30)
             if response.status_code == 200:
                 dane = response.json()
                 wyniki = dane.get('content') or dane.get('items') or []
@@ -116,17 +115,17 @@ def szukaj_szeroko_w_api_mf(data_start_str, data_koniec_str, pelna_fraza, sesja,
                             dokumenty_podatkowe.append({"id": doc_id, "sygnatura": sygnatura, "typ": nazwa_podatku, "data": data_wydania})
                 return dokumenty_podatkowe
         except:
-            time.sleep(2)
+            time.sleep(1)
     return []
 
-def pobierz_i_zweryfikuj_pypdf(id_dokumentu, rdzen_szukany):
-    """Krok 2: Weryfikacja rdzenia w Pythonie"""
+def pobierz_pelny_tekst_pypdf(id_dokumentu):
     url = PDF_API_URL.format(id=id_dokumentu)
     headers_pdf = {"User-Agent": "Mozilla/5.0", "Referer": "https://eureka.mf.gov.pl/"}
     
     for _ in range(3):
         try:
-            response = requests.get(url, headers=headers_pdf, timeout=60)
+            # Dodano rygorystyczny timeout=15, aby uszkodzony plik lub zawieszony serwer nie zatrzymał aplikacji
+            response = requests.get(url, headers=headers_pdf, timeout=15)
             if response.status_code == 200:
                 plik_w_pamieci = io.BytesIO(response.content)
                 tekst_dokumentu = ""
@@ -135,18 +134,13 @@ def pobierz_i_zweryfikuj_pypdf(id_dokumentu, rdzen_szukany):
                     for strona in reader.pages:
                         wyc = strona.extract_text()
                         if wyc: tekst_dokumentu += wyc + "\n"
-                        
-                    # Krytyczna weryfikacja rdzenia (np. 'ciepłownicz' w pobranym tekście)
-                    if rdzen_szukany.lower() in tekst_dokumentu.lower():
-                        return tekst_dokumentu
-                    else:
-                        return None
+                    return tekst_dokumentu
                 except:
                     return None
             elif response.status_code in [404, 400]:
                 return None
         except:
-            time.sleep(2)
+            time.sleep(1)
     return None
 
 # --- 5. LEWY PANEL NAWIGACYJNY ---
@@ -154,12 +148,12 @@ st.sidebar.title("📌 Menu PickPivot")
 st.sidebar.markdown("---")
 aktywna_zakladka = st.sidebar.radio("Wybierz moduł platformy:", ["1", "2", "3", "4", "5", "6"])
 st.sidebar.markdown("---")
-st.sidebar.caption("© 2026 PickPivot v6.0 (Zoptymalizowane Trafienia)")
+st.sidebar.caption("© 2026 PickPivot v6.1")
 
 # --- 6. GŁÓWNY EKRAN ---
 if aktywna_zakladka == "1":
     st.title("⚡ PickPivot: Niezawodny Radar Orzecznictwa")
-    st.markdown("Algorytm dwustopniowy. Zapewnia maksymalną liczbę wyników, czytelne logowanie na żywo i generowanie pliku Word na koniec.")
+    st.markdown("Wersja zoptymalizowana sieciowo. Dokonuje błyskawicznej selekcji po stronie MF i pobiera wyłącznie pewne dokumenty.")
 
     konfiguracja = wczytaj_historie()
     przetworzone_id = set(konfiguracja.get("przetworzone_id", []))
@@ -167,11 +161,11 @@ if aktywna_zakladka == "1":
     pelne_tresci_cache = wczytaj_pelne_tresci()
 
     if pelne_tresci_cache:
-        st.success(f"💾 BAZA DANYCH: W bazie zabezpieczono {len(pelne_tresci_cache)} unikalnych orzeczeń o pełnej treści.")
+        st.success(f"💾 BAZA DANYCH: W pamięci podręcznej zabezpieczono {len(pelne_tresci_cache)} unikalnych orzeczeń.")
         colA, colB = st.columns(2)
         with colA:
             if st.button("📄 GENERUJ I POBIERZ RAPORT WORD (.docx)", use_container_width=True, type="primary"):
-                with st.spinner("Trwa kompilowanie raportu..."):
+                with st.spinner("Trwa błyskawiczne składanie dokumentu tekstowego..."):
                     doc = Document()
                     doc.add_heading('Baza Orzecznictwa PickPivot', 0)
                     
@@ -216,7 +210,7 @@ if aktywna_zakladka == "1":
     with col3:
         wybrane_podatki_ui = st.multiselect("Rodzaj podatku:", ["CIT", "VAT", "AKCYZA"])
 
-    if st.button("🚀 Uruchom dwustopniowe skanowanie", use_container_width=True):
+    if st.button("🚀 Uruchom szybkie skanowanie sekwencyjne", use_container_width=True):
         if not wybrane_lata or not wybrane_miesiace or not wybrane_podatki_ui:
             st.error("Proszę wybrać komplet parametrów.")
             st.stop()
@@ -231,10 +225,8 @@ if aktywna_zakladka == "1":
             okno_logow = st.container()
         
         licznik_trafien = 0
-        calkowita_liczba_zapytan = len(wybrane_lata) * len(wybrane_miesiace) * len(SLOWNIK_WYSZUKIWANIA) * len(wybrane_podatki_ui)
+        calkowita_liczba_zapytan = len(wybrane_lata) * len(wybrane_miesiace) * len(FRAZY_KLUCZOWE) * len(wybrane_podatki_ui)
         zapytania_wykonane = 0
-
-        raport_statystyk = {f: 0 for f in SLOWNIK_WYSZUKIWANIA.keys()}
 
         with requests.Session() as sesja_bazy:
             for rok in wybrane_lata:
@@ -243,21 +235,20 @@ if aktywna_zakladka == "1":
                     data_start_str = f"{rok}-{miesiac:02d}-01"
                     data_koniec_str = f"{rok}-{miesiac:02d}-{ost_dzien:02d}"
                     
-                    for pelna_fraza, rdzen in SLOWNIK_WYSZUKIWANIA.items():
+                    for fraza in FRAZY_KLUCZOWE:
                         for podatek in wybrane_podatki_ui:
                             
-                            # ZAWSZE aktualizujemy ekran, żebyś wiedział, że skrypt pracuje
-                            status_tekst.info(f"🔍 [{miesiac:02d}/{rok}] Wyszukuję: '{pelna_fraza}' (Podatek: {podatek})...")
+                            # Logowanie na żywo na ekranie
+                            status_tekst.info(f"🔍 [{miesiac:02d}/{rok}] Odpytuję bazę o frazę: '{fraza}' ({podatek})...")
                             
-                            klucz_kombinacji = f"{rok}_{miesiac}_{pelna_fraza}_{podatek}"
+                            klucz_kombinacji = f"{rok}_{miesiac}_{fraza}_{podatek}"
                             if klucz_kombinacji in ukonczone_kombinacje:
                                 zapytania_wykonane += 1
                                 postep = min(1.0, zapytania_wykonane / calkowita_liczba_zapytan)
                                 pasek_postepu.progress(postep)
-                                time.sleep(0.05) # Mikropauza dla płynności interfejsu
                                 continue
                             
-                            lista_trafien = szukaj_szeroko_w_api_mf(data_start_str, data_koniec_str, pelna_fraza, sesja_bazy, podatek, KODY_PODATKOW[podatek])
+                            lista_trafien = szukaj_w_api_mf_strikt(data_start_str, data_koniec_str, fraza, sesja_bazy, podatek, KODY_PODATKOW[podatek])
                             
                             if lista_trafien:
                                 aktualne_tresci = wczytaj_pelne_tresci()
@@ -267,15 +258,15 @@ if aktywna_zakladka == "1":
                                     if doc_id in przetworzone_id:
                                         continue
                                         
-                                    status_tekst.warning(f"⏳ Znalazłem potencjalny dokument ({dok['sygnatura']}). Pobieram i weryfikuję...")
-                                    tekst_dokumentu = pobierz_i_zweryfikuj_pypdf(doc_id, rdzen)
+                                    status_tekst.warning(f"⏳ Wykryto celne trafienie! Pobieram treść: {dok['sygnatura']}...")
+                                    tekst_dokumentu = pobierz_pelny_tekst_pypdf(doc_id)
                                     
                                     if tekst_dokumentu:
                                         nowy_rekord = {
                                             "Data": dok["data"],
                                             "Podatek": dok["typ"],
                                             "Sygnatura": dok["sygnatura"],
-                                            "Słowo kluczowe": f"{pelna_fraza.upper()} (weryfikacja rdzenia: {rdzen})",
+                                            "Słowo kluczowe": fraza.upper(),
                                             "Link": PODGLAD_URL.format(id=doc_id),
                                             "Tekst": tekst_dokumentu
                                         }
@@ -283,10 +274,9 @@ if aktywna_zakladka == "1":
                                         przetworzone_id.add(doc_id)
                                         konfiguracja["przetworzone_id"].append(doc_id)
                                         licznik_trafien += 1
-                                        raport_statystyk[pelna_fraza] += 1
                                         
                                         with okno_logow:
-                                            st.success(f"✔️ Trafienie zweryfikowane! [{pelna_fraza.upper()}] -> {dok['sygnatura']}")
+                                            st.success(f"✔️ Dodano do raportu: [{fraza.upper()}] -> {dok['sygnatura']}")
                                 
                                 zapisz_pelne_tresci(aktualne_tresci)
                             
@@ -297,16 +287,13 @@ if aktywna_zakladka == "1":
                             zapytania_wykonane += 1
                             postep = min(1.0, zapytania_wykonane / calkowita_liczba_zapytan)
                             pasek_postepu.progress(postep)
-                            time.sleep(random.uniform(0.1, 0.3))
+                            
+                            # Bardzo krótka przerwa dla stabilności połączenia
+                            time.sleep(random.uniform(0.1, 0.2))
 
-        status_tekst.success(f"🎉 WSZYSTKIE WYSZUKIWANIA ZOSTAŁY ZAKOŃCZONE! Dodano {licznik_trafien} nowych interpretacji.")
+        status_tekst.success(f"🎉 WSZYSTKIE WYSZUKIWANIA ZOSTAŁY ZAKOŃCZONE! Zebrano łącznie {licznik_trafien} unikalnych interpretacji.")
         st.balloons()
-        
-        st.markdown("### 📊 Końcowe podsumowanie trafień per fraza:")
-        df_stats = pd.DataFrame(list(raport_statystyk.items()), columns=["Wyszukiwana fraza", "Liczba potwierdzonych trafień"])
-        st.dataframe(df_stats, use_container_width=True)
-        
-        time.sleep(5)
+        time.sleep(3)
         st.rerun()
 
 else:
