@@ -56,7 +56,7 @@ def wyczysc_tekst_dla_worda(tekst):
 
 def pobierz_tekst_pdf(id_dokumentu):
     url = PDF_API_URL.format(id=id_dokumentu)
-    headers_pdf = {"User-Agent": "Mozilla/5.0", "Referer": "https://eureka.mf.gov.pl/"}
+    headers_pdf = {"User-Agent": "Mozilla/5.0"}
     for proba in range(3):
         try:
             response = requests.get(url, headers=headers_pdf, timeout=20)
@@ -79,29 +79,21 @@ def szukaj_w_api_mf(data_start_str, data_koniec_str, fraza, sesja, nazwa_podatku
     page = 0
     while True:
         url = SEARCH_API_URL_BASE.format(page=page)
-        payload = {
-            "query": fraza,
-            "filter": {"KATEGORIA_INFORMACJI": [1], "DT_WYD_start": data_start_str, "DT_WYD_end": data_koniec_str},
-            "columns": ["SYG", "ID_INFORMACJI", "DT_WYD"],
-            "searchInFullPhrase": False, "searchInContent": True, "searchInSynonyms": True, "warunkiDodatkowe": []
-        }
-        headers = {"User-Agent": "Mozilla/5.0", "Content-Type": "application/json"}
+        payload = {"query": fraza, "filter": {"KATEGORIA_INFORMACJI": [1], "DT_WYD_start": data_start_str, "DT_WYD_end": data_koniec_str}, "columns": ["SYG", "ID_INFORMACJI", "DT_WYD"], "searchInFullPhrase": False, "searchInContent": True, "searchInSynonyms": True, "warunkiDodatkowe": []}
         try:
-            response = sesja.post(url, json=payload, headers=headers, timeout=12)
+            response = sesja.post(url, json=payload, headers={"User-Agent": "Mozilla/5.0", "Content-Type": "application/json"}, timeout=12)
             if response.status_code == 200:
                 dane = response.json()
                 wyniki = dane.get('content') or dane.get('items') or []
                 if not wyniki:
                     for k, v in dane.items():
-                        if isinstance(v, list) and len(v) > 0 and isinstance(v[0], dict):
-                            if 'id' in v[0] or 'ID_INFORMACJI' in v[0]:
-                                wyniki = v; break
+                        if isinstance(v, list) and len(v) > 0 and isinstance(v[0], dict) and ('id' in v[0] or 'ID_INFORMACJI' in v[0]):
+                            wyniki = v; break
                 for d in wyniki:
                     sygnatura = str(d.get('SYG', '')).upper()
-                    data_wydania = str(d.get('DT_WYD', '')).split('T')[0]
                     if kod_sygnatury in sygnatura:
                         doc_id = str(d.get('id') or d.get('ID_INFORMACJI'))
-                        if doc_id: dokumenty_podatkowe.append({"id": doc_id, "sygnatura": sygnatura, "typ": nazwa_podatku, "data": data_wydania})
+                        if doc_id: dokumenty_podatkowe.append({"id": doc_id, "sygnatura": sygnatura, "typ": nazwa_podatku, "data": str(d.get('DT_WYD', '')).split('T')[0]})
                 if len(wyniki) < 100: break
                 page += 1
                 time.sleep(0.2)
@@ -114,28 +106,21 @@ def pobierz_wszystko_z_okresu(data_start_str, data_koniec_str, sesja, nazwa_poda
     page = 0
     while True:
         url = SEARCH_API_URL_BASE.format(page=page)
-        payload = {
-            "filter": {"KATEGORIA_INFORMACJI": [1], "DT_WYD_start": data_start_str, "DT_WYD_end": data_koniec_str},
-            "columns": ["SYG", "ID_INFORMACJI", "DT_WYD"],
-            "searchInFullPhrase": False, "searchInContent": False, "searchInSynonyms": False, "warunkiDodatkowe": []
-        }
-        headers = {"User-Agent": "Mozilla/5.0", "Content-Type": "application/json"}
+        payload = {"filter": {"KATEGORIA_INFORMACJI": [1], "DT_WYD_start": data_start_str, "DT_WYD_end": data_koniec_str}, "columns": ["SYG", "ID_INFORMACJI", "DT_WYD"], "searchInFullPhrase": False, "searchInContent": False, "searchInSynonyms": False, "warunkiDodatkowe": []}
         try:
-            response = sesja.post(url, json=payload, headers=headers, timeout=15)
+            response = sesja.post(url, json=payload, headers={"User-Agent": "Mozilla/5.0", "Content-Type": "application/json"}, timeout=15)
             if response.status_code == 200:
                 dane = response.json()
                 wyniki = dane.get('content') or dane.get('items') or []
                 if not wyniki:
                     for k, v in dane.items():
-                        if isinstance(v, list) and len(v) > 0 and isinstance(v[0], dict):
-                            if 'id' in v[0] or 'ID_INFORMACJI' in v[0]:
-                                wyniki = v; break
+                        if isinstance(v, list) and len(v) > 0 and isinstance(v[0], dict) and ('id' in v[0] or 'ID_INFORMACJI' in v[0]):
+                            wyniki = v; break
                 for d in wyniki:
                     sygnatura = str(d.get('SYG', '')).upper()
-                    data_wydania = str(d.get('DT_WYD', '')).split('T')[0]
                     if kod_sygnatury in sygnatura:
                         doc_id = str(d.get('id') or d.get('ID_INFORMACJI'))
-                        if doc_id: dokumenty_podatkowe.append({"id": doc_id, "sygnatura": sygnatura, "typ": nazwa_podatku, "data": data_wydania})
+                        if doc_id: dokumenty_podatkowe.append({"id": doc_id, "sygnatura": sygnatura, "typ": nazwa_podatku, "data": str(d.get('DT_WYD', '')).split('T')[0]})
                 if len(wyniki) < 100: break
                 page += 1
                 time.sleep(0.2)
