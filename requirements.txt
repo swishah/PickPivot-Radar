@@ -3,3 +3,6 @@ requests
 PyPDF2
 pandas
 python-docx
+yfinance
+numpy
+xlsxwriter
