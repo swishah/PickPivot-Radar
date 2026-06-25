@@ -15,14 +15,14 @@ import warnings
 from datetime import datetime, date
 from docx import Document
 
-# Wyciszenie ostrzeżeń systemowych dla yfinance
+# IMPORT NASZEGO NOWEGO, ODSEPAROWANEGO PLIKU:
+import cfo_analyzer 
+
 warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
 
-# --- 1. USTAWIENIA STRONY (Muszą być na samym początku) ---
 st.set_page_config(page_title="PickPivot Platform", page_icon="⚡", layout="wide")
 
-# --- 2. SYSTEM LOGOWANIA (ZABEZPIECZENIE) ---
 if 'authenticated' not in st.session_state:
     st.session_state['authenticated'] = False
 
@@ -47,7 +47,6 @@ if not st.session_state['authenticated']:
                 st.error("Wprowadzono niepoprawny login lub hasło.")
     st.stop() 
 
-# --- 3. KONFIGURACJA ŚRODOWISKA BOTA (Prawo Podatkowe) ---
 FOLDER_DOCELOWY = 'PickPivot_Data'
 if not os.path.exists(FOLDER_DOCELOWY):
     os.makedirs(FOLDER_DOCELOWY)
@@ -69,10 +68,7 @@ FRAZY_KLUCZOWE = [
 ]
 
 KODY_PODATKOW = {
-    "PIT": ".4011.",
-    "CIT": ".4010.",
-    "VAT": ".4012.",
-    "AKCYZA": ".4013."
+    "PIT": ".4011.", "CIT": ".4010.", "VAT": ".4012.", "AKCYZA": ".4013."
 }
 
 MIESIACE_PL = [
@@ -80,7 +76,7 @@ MIESIACE_PL = [
     "Lipiec", "Sierpień", "Wrzesień", "Październik", "Listopad", "Grudzień"
 ]
 
-# --- SŁOWNIKI DLA MODUŁU 3 (Skaner Giełdowy) ---
+# SŁOWNIKI DLA MODUŁU 3 (Skaner Giełdowy)
 WIG20_MAP = {"ALE.WA": "Allegro", "ALR.WA": "Alior Bank", "BDX.WA": "Budimex", "BHW.WA": "Bank Handlowy", "CDR.WA": "CD Projekt", "CPS.WA": "Cyfrowy Polsat", "DNP.WA": "Dino Polska", "JSW.WA": "JSW", "KGH.WA": "KGHM", "KRU.WA": "Kruk", "LPP.WA": "LPP", "MBK.WA": "mBank", "OPL.WA": "Orange Polska", "PEO.WA": "Pekao SA", "PGE.WA": "PGE", "PKO.WA": "PKO BP", "PKN.WA": "ORLEN", "PZU.WA": "PZU", "SPL.WA": "Santander BP", "MDV.WA": "Modivo"}
 MWIG40_MAP = {"11B.WA": "11 bit studios", "1AT.WA": "Atal", "ABS.WA": "Asseco BS", "APR.WA": "Auto Partner", "ASB.WA": "ASBIS", "BFT.WA": "Benefit Systems", "CAR.WA": "Inter Cars", "CIG.WA": "CI Games", "CLN.WA": "Celon Pharma", "COG.WA": "Cognor", "DAT.WA": "DataWalk", "DOM.WA": "Dom Development", "EAT.WA": "AmRest", "ENP.WA": "Enea", "EUR.WA": "Eurocash", "GPP.WA": "Grupa Pracuj", "GRN.WA": "Grenevia", "GTC.WA": "GTC", "HUU.WA": "Huuuge", "ING.WA": "ING BSK", "TXT.WA": "Text S.A.", "MIL.WA": "Millennium", "MBR.WA": "Mo-BRUK", "NEU.WA": "Neuca", "PLW.WA": "PlayWay", "RVU.WA": "Revuele", "SEL.WA": "Selena FM", "STP.WA": "Stalproduct", "TEN.WA": "Ten Square Games", "TPE.WA": "Tauron", "VRG.WA": "VRG", "WPL.WA": "Wirtualna Polska", "XTB.WA": "XTB", "GPW.WA": "GPW", "SNK.WA": "Sanok", "AST.WA": "Asseco POL", "ATC.WA": "Arctic Paper"}
 DAX_MAP = {"ADS.DE": "Adidas", "AIR.DE": "Airbus", "ALV.DE": "Allianz", "BAS.DE": "BASF", "BAYN.DE": "Bayer", "BEI.DE": "Beiersdorf", "BMW.DE": "BMW", "BNR.DE": "Brenntag", "CBK.DE": "Commerzbank", "CON.DE": "Continental", "1COV.DE": "Covestro", "DTG.DE": "Daimler Truck", "DBK.DE": "Deutsche Bank", "DB1.DE": "Deutsche Börse", "DPW.DE": "DHL Group", "DTE.DE": "Deutsche Telekom", "EOAN.DE": "E.ON", "FRE.DE": "Fresenius", "HNR1.DE": "Hannover Re", "HEI.DE": "Heidelberg Materials", "HEN3.DE": "Henkel", "IFX.DE": "Infineon", "MBG.DE": "Mercedes-Benz", "MRK.DE": "Merck", "MTX.DE": "MTU Aero Engines", "MUV2.DE": "Munich Re", "P911.DE": "Porsche AG", "PAH3.DE": "Porsche SE", "QIA.DE": "Qiagen", "RHM.DE": "Rheinmetall", "RWE.DE": "RWE", "SAP.DE": "SAP", "SRT3.DE": "Sartorius", "SIE.DE": "Siemens", "ENR.DE": "Siemens Energy", "SHL.DE": "Siemens Healthineers", "SY1.DE": "Symrise", "VOW3.DE": "Volkswagen", "VNA.DE": "Vonovia", "ZAL.DE": "Zalando"}
@@ -90,13 +86,11 @@ IBEX_MAP = {"ANA.MC": "Acciona", "ACX.MC": "Acerinox", "ACS.MC": "ACS", "AENA.MC
 OMX_MAP = {"ABB.ST": "ABB", "ALFA.ST": "Alfa Laval", "ASSA-B.ST": "ASSA ABLOY", "ATCO-A.ST": "Atlas Copco A", "ATCO-B.ST": "Atlas Copco B", "AZN.ST": "AstraZeneca", "BOL.ST": "Boliden", "ELUX-B.ST": "Electrolux", "ERIC-B.ST": "Ericsson", "ESSITY-B.ST": "Essity", "EVO.ST": "Evolution", "GETI-B.ST": "Getinge", "HEXA-B.ST": "Hexagon", "HM-B.ST": "H&M", "INVE-B.ST": "Investor B", "KINV-B.ST": "Kinnevik", "NDA-SE.ST": "Nordea", "SAND.ST": "Sandvik", "SCA-B.ST": "SCA", "SEB-A.ST": "SEB", "SHB-A.ST": "Handelsbanken", "SKA-B.ST": "Skanska", "SKF-B.ST": "SKF", "STE-R.ST": "Stora Enso", "SWED-A.ST": "Swedbank", "SWMA.ST": "Swedish Match", "TEL2-B.ST": "Tele2", "TELIA.ST": "Telia", "VOLV-B.ST": "Volvo B"}
 OBX_MAP = {"EQNR.OL": "Equinor", "DNB.OL": "DNB Bank", "AKBP.OL": "Aker BP", "TEL.OL": "Telenor", "NHY.OL": "Norsk Hydro", "MOWI.OL": "Mowi", "YAR.OL": "Yara International", "ORK.OL": "Orkla", "SUBC.OL": "Subsea 7", "TOM.OL": "Tomra Systems", "STB.OL": "Storebrand", "SALM.OL": "SalMar", "GJFS.OL": "Gjensidige", "AKER.OL": "Aker", "SCHA.OL": "Schibsted A", "FRO.OL": "Frontline", "TGS.OL": "TGS", "BAKKA.OL": "Bakkafrost", "LSG.OL": "Lerøy Seafood", "KOG.OL": "Kongsberg Gruppen", "NOD.OL": "Nordic Semiconductor", "NEL.OL": "Nel", "VAR.OL": "Vår Energi", "MPCC.OL": "MPC Container Ships"}
 
-# --- 4. UNIWERSALNE FUNKCJE (Prawo + Giełda) ---
 def wczytaj_historie(plik):
     if os.path.exists(plik):
         with open(plik, 'r', encoding='utf-8') as f:
             dane = json.load(f)
-            if "uszkodzone_id" not in dane:
-                dane["uszkodzone_id"] = []
+            if "uszkodzone_id" not in dane: dane["uszkodzone_id"] = []
             return dane
     return {"przetworzone_id": [], "ukonczone_kombinacje": [], "uszkodzone_id": []}
 
@@ -106,8 +100,7 @@ def zapisz_historie(plik, konfiguracja):
 
 def wczytaj_pelne_tresci(plik):
     if os.path.exists(plik):
-        with open(plik, 'r', encoding='utf-8') as f:
-            return json.load(f)
+        with open(plik, 'r', encoding='utf-8') as f: return json.load(f)
     return []
 
 def zapisz_pelne_tresci(plik, lista_rekordow):
@@ -115,10 +108,8 @@ def zapisz_pelne_tresci(plik, lista_rekordow):
         json.dump(lista_rekordow, f, ensure_ascii=False, indent=4)
 
 def wyczysc_dane_serwera(plik_konf, plik_rekordow):
-    if os.path.exists(plik_konf):
-        os.remove(plik_konf)
-    if os.path.exists(plik_rekordow):
-        os.remove(plik_rekordow)
+    if os.path.exists(plik_konf): os.remove(plik_konf)
+    if os.path.exists(plik_rekordow): os.remove(plik_rekordow)
 
 def wyczysc_tekst_dla_worda(tekst):
     if not tekst: return ""
@@ -138,12 +129,9 @@ def pobierz_tekst_pdf(id_dokumentu):
                     wyc = strona.extract_text()
                     if wyc: tekst_dokumentu += wyc + "\n"
                 return tekst_dokumentu, "OK"
-            elif response.status_code in [404, 400]:
-                return None, "BRAK_PLIKU"
-            elif response.status_code == 429:
-                time.sleep(5)
-            else:
-                time.sleep(2)
+            elif response.status_code in [404, 400]: return None, "BRAK_PLIKU"
+            elif response.status_code == 429: time.sleep(5)
+            else: time.sleep(2)
         except:
             time.sleep(3)
     return None, "BLOKADA"
@@ -176,18 +164,13 @@ def szukaj_w_api_mf(data_start_str, data_koniec_str, fraza, sesja, nazwa_podatku
                     data_wydania = str(d.get('DT_WYD', '')).split('T')[0]
                     if kod_sygnatury in sygnatura:
                         doc_id = str(d.get('id') or d.get('ID_INFORMACJI'))
-                        if doc_id:
-                            dokumenty_podatkowe.append({"id": doc_id, "sygnatura": sygnatura, "typ": nazwa_podatku, "data": data_wydania})
-                if len(wyniki) < 100:
-                    break
+                        if doc_id: dokumenty_podatkowe.append({"id": doc_id, "sygnatura": sygnatura, "typ": nazwa_podatku, "data": data_wydania})
+                if len(wyniki) < 100: break
                 page += 1
                 time.sleep(0.2)
-            else:
-                return dokumenty_podatkowe, "ERROR"
-        except requests.exceptions.Timeout:
-            return dokumenty_podatkowe, "TIMEOUT"
-        except:
-            return dokumenty_podatkowe, "ERROR"
+            else: return dokumenty_podatkowe, "ERROR"
+        except requests.exceptions.Timeout: return dokumenty_podatkowe, "TIMEOUT"
+        except: return dokumenty_podatkowe, "ERROR"
     return dokumenty_podatkowe, "OK"
 
 def pobierz_wszystko_z_okresu(data_start_str, data_koniec_str, sesja, nazwa_podatku, kod_sygnatury):
@@ -217,21 +200,15 @@ def pobierz_wszystko_z_okresu(data_start_str, data_koniec_str, sesja, nazwa_poda
                     data_wydania = str(d.get('DT_WYD', '')).split('T')[0]
                     if kod_sygnatury in sygnatura:
                         doc_id = str(d.get('id') or d.get('ID_INFORMACJI'))
-                        if doc_id:
-                            dokumenty_podatkowe.append({"id": doc_id, "sygnatura": sygnatura, "typ": nazwa_podatku, "data": data_wydania})
-                if len(wyniki) < 100:
-                    break
+                        if doc_id: dokumenty_podatkowe.append({"id": doc_id, "sygnatura": sygnatura, "typ": nazwa_podatku, "data": data_wydania})
+                if len(wyniki) < 100: break
                 page += 1
                 time.sleep(0.2)
-            else:
-                return dokumenty_podatkowe, "ERROR"
-        except requests.exceptions.Timeout:
-            return dokumenty_podatkowe, "TIMEOUT"
-        except:
-            return dokumenty_podatkowe, "ERROR"
+            else: return dokumenty_podatkowe, "ERROR"
+        except requests.exceptions.Timeout: return dokumenty_podatkowe, "TIMEOUT"
+        except: return dokumenty_podatkowe, "ERROR"
     return dokumenty_podatkowe, "OK"
 
-# --- Funkcje Modułu Giełdowego ---
 @st.cache_data(ttl=3600*24)
 def get_sp500_map():
     url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
@@ -270,8 +247,7 @@ def analyze_market(ticker_map, label):
             try:
                 ticker_obj = yf.Ticker(t)
                 info = ticker_obj.info
-            except:
-                info = {}
+            except: info = {}
 
             def safe_get(key, is_pct=False):
                 val = info.get(key)
@@ -393,9 +369,10 @@ def generate_excel_in_memory(data_dict):
     writer.close()
     return output.getvalue()
 
+
 # --- 6. LEWY PANEL NAWIGACYJNY (SIDEBAR) ---
 st.sidebar.title("📌 Menu PickPivot")
-st.sidebar.markdown(f"Zalogowany jako: **DORADCA**")
+st.sidebar.markdown(f"Zalogowany jako: **{username if 'username' in locals() else 'DORADCA'}**")
 
 aktywna_zakladka = st.sidebar.radio(
     "Wybierz moduł platformy:",
@@ -403,7 +380,7 @@ aktywna_zakladka = st.sidebar.radio(
         "1. Radar Orzecznictwa",
         "2. Ściągacz Interpretacji",
         "3. Global Market Scanner",
-        "4. Panel Analityczny (W przyszłości)",
+        "4. Analiza Wskaźnikowa (XML)",  # ZMIENIONA NAZWA!
         "5. Historia Pobierania (W przyszłości)",
         "6. Ustawienia Systemu (W przyszłości)"
     ]
@@ -415,7 +392,7 @@ if st.sidebar.button("🚪 Wyloguj się", use_container_width=True):
     st.rerun()
 
 st.sidebar.markdown("---")
-st.sidebar.caption("© 2026 PickPivot v12.0 Multi-Tool")
+st.sidebar.caption("© 2026 PickPivot v13.1 Multi-Tool")
 
 # --- 7. LOGIKA MODUŁÓW ---
 
@@ -460,7 +437,7 @@ if aktywna_zakladka.startswith("1."):
 
     if st.button("🚀 Uruchom skanowanie słów kluczowych", use_container_width=True):
         if not wybrane_lata or not wybrane_miesiace_ui or not wybrane_podatki_ui:
-            st.error("Proszę wybrać komplet parametrów (Rok, Miesiąc, Podatek).")
+            st.error("Proszę wybrać komplet parametrów.")
             st.stop()
             
         wybrane_miesiace = [MIESIACE_PL.index(m) + 1 for m in wybrane_miesiace_ui]
@@ -477,7 +454,6 @@ if aktywna_zakladka.startswith("1."):
                     _, ost_dzien = calendar.monthrange(rok, miesiac)
                     data_start_str = f"{rok}-{miesiac:02d}-01"
                     data_koniec_str = f"{rok}-{miesiac:02d}-{ost_dzien:02d}"
-                    
                     for fraza in FRAZY_KLUCZOWE:
                         for podatek in wybrane_podatki_ui:
                             klucz_kombinacji = f"M1_{rok}_{miesiac}_{fraza}_{podatek}"
@@ -492,7 +468,7 @@ if aktywna_zakladka.startswith("1."):
                                 aktualne_tresci = wczytaj_pelne_tresci(PLIK_REKORDOW_M1)
                                 for dok in lista_trafien:
                                     if dok["id"] not in przetworzone_id:
-                                        tekst, status_pobrania = pobierz_tekst_pdf(dok["id"])
+                                        tekst, status_pobr = pobierz_tekst_pdf(dok["id"])
                                         if tekst:
                                             aktualne_tresci.append({
                                                 "Data": dok["data"], "Podatek": dok["typ"], "Sygnatura": dok["sygnatura"],
@@ -515,36 +491,28 @@ if aktywna_zakladka.startswith("1."):
         st.rerun()
 
 elif aktywna_zakladka.startswith("2."):
-    # ==========================================
-    # MODUŁ 2: ŚCIĄGACZ INTERPRETACJI (BULK)
-    # ==========================================
-    st.title("📦 Ściągacz Interpretacji (Pobieranie Zbiorcze)")
-    st.markdown("Pobiera **wszystkie** interpretacje indywidualne z wybranego okresu i łączy je w jeden plik Word.")
+    st.title("📦 Ściągacz Interpretacji")
+    st.markdown("Pobiera **wszystkie** interpretacje indywidualne z wybranego okresu.")
 
     if st.session_state.get('lockout_active_m2', False):
         st.markdown("<br><br>", unsafe_allow_html=True)
-        st.error("🔒 SYSTEM OCHRONY PRZED BANEM: Wykryto błąd sieciowy serwera MF (zbyt szybkie pobieranie).")
-        st.info("Aplikacja została tymczasowo zawieszona na 5 minut, aby zresetować połączenie i chronić Twoje IP przed blokadą.")
-        
+        st.error("🔒 SYSTEM OCHRONY PRZED BANEM AKTYWNY")
         elapsed = time.time() - st.session_state.get('lockout_start_m2', 0)
         if elapsed < 300:
             countdown_placeholder = st.empty()
             while elapsed < 300:
                 remaining = int(300 - elapsed)
                 mins, secs = divmod(remaining, 60)
-                countdown_placeholder.markdown(f"<h2 style='text-align: center; color: #ff4b4b;'>⏳ Czas do automatycznego odblokowania platformy: {mins:02d}:{secs:02d}</h2>", unsafe_allow_html=True)
+                countdown_placeholder.markdown(f"<h2 style='text-align: center; color: #ff4b4b;'>⏳ Czas do odblokowania: {mins:02d}:{secs:02d}</h2>", unsafe_allow_html=True)
                 time.sleep(1)
                 elapsed = time.time() - st.session_state.get('lockout_start_m2', 0)
             st.rerun()
         else:
-            st.success("🎉 Czas oczekiwania minął pomyślnie! Urzędowe limity zostały zresetowane.")
-            st.markdown("<br><br>", unsafe_allow_html=True)
-            col_l, col_m, col_r = st.columns([1, 2, 1])
-            with col_m:
-                if st.button("▶️ WZNÓW PRZERWANE POBIERANIE", use_container_width=True, type="primary"):
-                    st.session_state['lockout_active_m2'] = False
-                    st.session_state['auto_resume_m2'] = True
-                    st.rerun()
+            st.success("🎉 Gotowe do wznowienia!")
+            if st.button("▶️ WZNÓW PRZERWANE POBIERANIE", use_container_width=True, type="primary"):
+                st.session_state['lockout_active_m2'] = False
+                st.session_state['auto_resume_m2'] = True
+                st.rerun()
             st.stop()
 
     konfiguracja_m2 = wczytaj_historie(PLIK_KONFIGURACJI_M2)
@@ -553,17 +521,17 @@ elif aktywna_zakladka.startswith("2."):
     pelne_tresci_m2 = wczytaj_pelne_tresci(PLIK_REKORDOW_M2)
 
     if pelne_tresci_m2 or uszkodzone_id_m2:
-        st.success(f"💾 BAZA DANYCH ŚCIĄGACZA: W pamięci podręcznej serwera zabezpieczono {len(pelne_tresci_m2)} dokumentów. Zignorowano {len(uszkodzone_id_m2)} pustych rekordów w MF.")
+        st.success(f"💾 BAZA ŚCIĄGACZA: Zabezpieczono {len(pelne_tresci_m2)} dokumentów. (Puste: {len(uszkodzone_id_m2)})")
         if pelne_tresci_m2:
             if st.button("📄 GENERUJ ARCHIWUM WORD (.docx)", use_container_width=True, type="primary"):
-                with st.spinner("Składanie rozbudowanego dokumentu... Może to chwilę potrwać..."):
+                with st.spinner("Składanie dokumentu..."):
                     doc = Document()
                     doc.add_heading('Kompleksowe Archiwum Orzecznictwa', 0)
                     for rekord in pelne_tresci_m2:
                         doc.add_heading(f"Sygnatura: {rekord['Sygnatura']}", level=1)
                         doc.add_paragraph(f"Data: {rekord['Data']} | Podatek: {rekord['Podatek']}")
-                        doc.add_paragraph(f"Link źródłowy: {rekord['Link']}")
-                        doc.add_heading("Pełna treść interpretacji:", level=2)
+                        doc.add_paragraph(f"Link: {rekord['Link']}")
+                        doc.add_heading("Treść:", level=2)
                         doc.add_paragraph(wyczysc_tekst_dla_worda(rekord['Tekst']))
                         doc.add_page_break()
                     output = io.BytesIO()
@@ -572,34 +540,28 @@ elif aktywna_zakladka.startswith("2."):
         st.markdown("---")
 
     col1, col2, col3 = st.columns(3)
-    with col1: wybrane_lata_m2 = st.multiselect("Wybierz lata:", [2024, 2025, 2026], key="latam2")
-    with col2: wybrane_miesiace_m2_ui = st.multiselect("Wybierz miesiące:", MIESIACE_PL, key="miesm2")
-    with col3: wybrane_podatki_ui_m2 = st.multiselect("Rodzaj podatku:", ["PIT", "CIT", "VAT", "AKCYZA"], default=["VAT"], key="podm2")
+    with col1: wybrane_lata_m2 = st.multiselect("Lata:", [2024, 2025, 2026], key="latam2")
+    with col2: wybrane_miesiace_m2_ui = st.multiselect("Miesiące:", MIESIACE_PL, key="miesm2")
+    with col3: wybrane_podatki_ui_m2 = st.multiselect("Podatki:", ["PIT", "CIT", "VAT", "AKCYZA"], default=["VAT"], key="podm2")
 
-    st.markdown("### Opcje pobierania")
     col_btn1, col_btn2 = st.columns(2)
-    with col_btn1:
-        btn_wznow = st.button("▶️ Wznów pobieranie (Dokończ brakujące)", use_container_width=True)
-    with col_btn2:
-        btn_od_nowa = st.button("🔄 Pobierz całkowicie od nowa (Wyczyść pamięć)", use_container_width=True)
+    with col_btn1: btn_wznow = st.button("▶️ Wznów pobieranie", use_container_width=True)
+    with col_btn2: btn_od_nowa = st.button("🔄 Pobierz od nowa", use_container_width=True)
 
     run_loop = btn_wznow or btn_od_nowa or st.session_state.get('auto_resume_m2', False)
 
     if run_loop:
         if not st.session_state.get('auto_resume_m2', False):
             if not wybrane_lata_m2 or not wybrane_miesiace_m2_ui or not wybrane_podatki_ui_m2:
-                st.error("Proszę wybrać parametry wejściowe (Rok, Miesiąc, Podatek).")
+                st.error("Wybierz parametry.")
                 st.stop()
 
         if btn_od_nowa:
             wyczysc_dane_serwera(PLIK_KONFIGURACJI_M2, PLIK_REKORDOW_M2)
             konfiguracja_m2 = {"przetworzone_id": [], "ukonczone_kombinacje": [], "uszkodzone_id": []}
-            przetworzone_id_m2 = set()
-            uszkodzone_id_m2 = set()
-            pelne_tresci_m2 = []
-            if 'queue_m2' in st.session_state:
-                del st.session_state['queue_m2']
-            st.toast("🧹 Pamięć wyczyszczona. Rozpoczynam od zera.")
+            przetworzone_id_m2, uszkodzone_id_m2, pelne_tresci_m2 = set(), set(), []
+            if 'queue_m2' in st.session_state: del st.session_state['queue_m2']
+            st.toast("🧹 Pamięć wyczyszczona.")
 
         if btn_wznow and 'queue_m2' in st.session_state:
             del st.session_state['queue_m2']
@@ -611,12 +573,10 @@ elif aktywna_zakladka.startswith("2."):
             do_pobrania_teraz = st.session_state['queue_m2']
             laczna_liczba_orzeczen = st.session_state.get('laczna_orzeczen_m2', len(do_pobrania_teraz))
             liczba_brakujacych = len(do_pobrania_teraz)
-            status_tekst.success("▶️ Kolejka przywrócona pomyślnie. Kontynuuję od zablokowanego elementu...")
+            status_tekst.success("▶️ Kontynuuję...")
         else:
-            status_tekst.info(f"🔍 Krok 1/2: Analizuję wskazane paczki miesięczne. Zliczam oficjalną pulę dokumentów MF...")
-            wszystkie_orzeczenia_w_mf = []
-            do_pobrania_teraz = []
-            
+            status_tekst.info("🔍 Krok 1/2: Zliczanie...")
+            wszystkie_orzeczenia_w_mf, do_pobrania_teraz = [], []
             wybrane_miesiace_m2 = [MIESIACE_PL.index(m) + 1 for m in wybrane_miesiace_m2_ui]
 
             with requests.Session() as sesja_bazy:
@@ -625,11 +585,8 @@ elif aktywna_zakladka.startswith("2."):
                         _, ost_dzien = calendar.monthrange(rok, miesiac)
                         data_start_str = f"{rok}-{miesiac:02d}-01"
                         data_koniec_str = f"{rok}-{miesiac:02d}-{ost_dzien:02d}"
-                        
                         for podatek in wybrane_podatki_ui_m2:
-                            log_szczegolowy.text(f"Zliczanie dokumentów dla {miesiac:02d}/{rok} ({podatek})...")
                             lista_trafien, _ = pobierz_wszystko_z_okresu(data_start_str, data_koniec_str, sesja_bazy, podatek, KODY_PODATKOW[podatek])
-                            
                             for dok in lista_trafien:
                                 wszystkie_orzeczenia_w_mf.append(dok)
                                 if dok["id"] not in przetworzone_id_m2 and dok["id"] not in uszkodzone_id_m2:
@@ -640,36 +597,25 @@ elif aktywna_zakladka.startswith("2."):
             st.session_state['laczna_orzeczen_m2'] = laczna_liczba_orzeczen
 
         st.session_state['auto_resume_m2'] = False
-
-        st.markdown(f"### 📊 Raport przedstartowy:")
-        st.info(f"Odnaleziono łącznie: **{laczna_liczba_orzeczen}** interpretacji zgłoszonych w bazie dla wskazanego okresu.")
-        st.write(f"Do fizycznego pobrania i sprawdzenia w tej sesji pozostało: **{liczba_brakujacych}** dokumentów.")
+        st.info(f"Odnaleziono: {laczna_liczba_orzeczen}. Do pobrania: {liczba_brakujacych}.")
         
         if liczba_brakujacych == 0:
-            status_tekst.success("✔️ Wszystkie orzeczenia znajdują się już w bazie cache. Wygeneruj plik Word.")
-            log_szczegolowy.empty()
+            status_tekst.success("✔️ Pula wyczerpana.")
             st.stop()
 
         time.sleep(1)
-
-        status_tekst.info(f"⏳ Krok 2/2: Pobieranie plików z serwerów KIS (0 / {liczba_brakujacych})...")
+        status_tekst.info(f"⏳ Krok 2/2: Pobieranie (0/{liczba_brakujacych})...")
         pasek_postepu = st.progress(0)
         
-        licznik_pobranych_w_sesji = 0
-        licznik_uszkodzonych_w_sesji = 0
+        licznik_pobranych_w_sesji, licznik_uszkodzonych_w_sesji = 0, 0
         aktualne_tresci_m2 = wczytaj_pelne_tresci(PLIK_REKORDOW_M2)
 
         for idx, dok in enumerate(do_pobrania_teraz):
-            log_szczegolowy.text(f"Pobieram plik ({idx+1}/{liczba_brakujacych}): {dok['sygnatura']}...")
-            
             st.session_state['queue_m2'] = do_pobrania_teraz[idx:]
-            
             tekst, status_pobr = pobierz_tekst_pdf(dok["id"])
+            
             if tekst:
-                aktualne_tresci_m2.append({
-                    "Data": dok["data"], "Podatek": dok["typ"], "Sygnatura": dok["sygnatura"],
-                    "Link": PODGLAD_URL.format(id=dok["id"]), "Tekst": tekst
-                })
+                aktualne_tresci_m2.append({"Data": dok["data"], "Podatek": dok["typ"], "Sygnatura": dok["sygnatura"], "Link": PODGLAD_URL.format(id=dok["id"]), "Tekst": tekst})
                 przetworzone_id_m2.add(dok["id"])
                 konfiguracja_m2["przetworzone_id"].append(dok["id"])
                 licznik_pobranych_w_sesji += 1
@@ -684,90 +630,78 @@ elif aktywna_zakladka.startswith("2."):
                     st.session_state['queue_m2'] = do_pobrania_teraz[idx:]
                     zapisz_pelne_tresci(PLIK_REKORDOW_M2, aktualne_tresci_m2)
                     zapisz_historie(PLIK_KONFIGURACJI_M2, konfiguracja_m2)
-                    st.toast("⚠️ Wykryto blokadę! Zabezpieczam dane i aktywuję śluzę ochronną.")
-                    time.sleep(1)
                     st.rerun()
                 
             zapisz_pelne_tresci(PLIK_REKORDOW_M2, aktualne_tresci_m2)
             zapisz_historie(PLIK_KONFIGURACJI_M2, konfiguracja_m2)
 
-            status_tekst.info(f"⏳ Zabezpieczono {licznik_pobranych_w_sesji} | Puste w MF: {licznik_uszkodzonych_w_sesji} | Zostało: {liczba_brakujacych - (idx + 1)}")
+            status_tekst.info(f"⏳ Pobrane: {licznik_pobranych_w_sesji} | Puste: {licznik_uszkodzonych_w_sesji}")
             pasek_postepu.progress((idx + 1) / liczba_brakujacych)
             time.sleep(random.uniform(1.5, 2.5))
 
-        if 'queue_m2' in st.session_state:
-            del st.session_state['queue_m2']
-
-        status_tekst.success(f"🎉 SUKCES! Zakończono sprawdzanie {liczba_brakujacych} plików. Skrypt pomyślnie zgrał {licznik_pobranych_w_sesji} dokumentów.")
-        log_szczegolowy.empty()
+        if 'queue_m2' in st.session_state: del st.session_state['queue_m2']
+        status_tekst.success(f"🎉 SUKCES! Pobrano {licznik_pobranych_w_sesji}.")
         st.balloons()
         time.sleep(4)
         st.rerun()
 
 elif aktywna_zakladka.startswith("3."):
-    # ==========================================
-    # MODUŁ 3: GLOBAL MARKET SCANNER
-    # ==========================================
     st.title("📊 PickPivot: Global Market Scanner")
     st.markdown("Weryfikacja danych technicznych oraz fundamentalnych giełd z Europy i USA.")
 
-    ALL_MARKETS = {
-        "Polska (WIG)": {**WIG20_MAP, **MWIG40_MAP},
-        "Niemcy (DAX)": DAX_MAP,
-        "Francja (CAC 40)": CAC40_MAP,
-        "UK (FTSE 100)": FTSE_MAP,
-        "Hiszpania (IBEX 35)": IBEX_MAP,
-        "Szwecja (OMX 30)": OMX_MAP,
-        "Norwegia (OBX)": OBX_MAP,
-        "USA (S&P 500)": get_sp500_map()
-    }
-
-    st.sidebar.header("Ustawienia Skanowania")
-    selected_markets = st.sidebar.multiselect(
-        "Wybierz rynki do analizy:",
-        options=list(ALL_MARKETS.keys()),
-        default=["Polska (WIG)"]
-    )
+    ALL_MARKETS = {"Polska (WIG)": {**WIG20_MAP, **MWIG40_MAP}, "Niemcy (DAX)": DAX_MAP, "Francja (CAC 40)": CAC40_MAP, "UK (FTSE 100)": FTSE_MAP, "Hiszpania (IBEX 35)": IBEX_MAP, "Szwecja (OMX 30)": OMX_MAP, "Norwegia (OBX)": OBX_MAP, "USA (S&P 500)": get_sp500_map()}
+    selected_markets = st.sidebar.multiselect("Wybierz rynki do analizy:", options=list(ALL_MARKETS.keys()), default=["Polska (WIG)"])
 
     if st.button("🚀 Uruchom Analizę Rynków", type="primary", use_container_width=True):
         if not selected_markets:
             st.warning("Proszę wybrać przynajmniej jeden rynek z panelu bocznego.")
         else:
-            st.info("Pobieranie danych z Yahoo Finance... To może zająć kilka minut w zależności od liczby wybranych rynków.")
-            
+            st.info("Pobieranie danych z Yahoo Finance...")
             final_results = {}
             progress_bar = st.progress(0)
-            status_text = st.empty()
             
             for i, market_name in enumerate(selected_markets):
-                status_text.text(f"Analizuję: {market_name}...")
-                df_market = analyze_market(ALL_MARKETS[market_name], market_name)
-                final_results[market_name] = df_market
+                final_results[market_name] = analyze_market(ALL_MARKETS[market_name], market_name)
                 progress_bar.progress((i + 1) / len(selected_markets))
                 
-            status_text.success("🎉 Analiza zakończona pomyślnie!")
+            st.success("🎉 Analiza zakończona pomyślnie!")
             
             st.subheader("Wyniki Skanowania")
             tabs = st.tabs(list(final_results.keys()))
-            
             for tab, market_name in zip(tabs, final_results.keys()):
                 with tab:
                     df = final_results[market_name]
-                    if not df.empty:
-                        st.dataframe(df, use_container_width=True, hide_index=True)
-                    else:
-                        st.write("Brak danych do wyświetlenia.")
+                    if not df.empty: st.dataframe(df, use_container_width=True, hide_index=True)
+                    else: st.write("Brak danych.")
                         
             st.markdown("---")
-            st.subheader("Eksport Danych")
+            st.subheader("Eksport i Dystrybucja")
             excel_data = generate_excel_in_memory(final_results)
-            st.download_button(
-                label="📥 Pobierz sformatowany plik Excel",
-                data=excel_data,
-                file_name=f"PickPivot_Global_Report_{datetime.now().strftime('%Y%m%d')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True
-            )
+            
+            colA, colB = st.columns(2)
+            with colA:
+                st.download_button("📥 Pobierz plik Excel", data=excel_data, file_name=f"Global_Report_{datetime.now().strftime('%Y%m%d')}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+            with colB:
+                DISCORD_WEBHOOK_URL = "TUTAJ_WKLEJ_SWÓJ_LINK_WEBHOOK_Z_DISCORDA"
+                if st.button("💬 Wyślij na Discord", use_container_width=True):
+                    if DISCORD_WEBHOOK_URL == "TUTAJ_WKLEJ_SWÓJ_LINK_WEBHOOK_Z_DISCORDA":
+                        st.error("Wklej link Webhook w kodzie!")
+                    else:
+                        with st.spinner("Wysyłanie..."):
+                            payload = {"content": f"📊 **Nowy Raport PickPivot Scanner** ({datetime.now().strftime('%Y-%m-%d %H:%M')}) gotowy!"}
+                            files = {"file": (f"Global_Report_{datetime.now().strftime('%Y%m%d')}.xlsx", excel_data, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}
+                            try:
+                                resp = requests.post(DISCORD_WEBHOOK_URL, data=payload, files=files)
+                                if resp.status_code in [200, 204]:
+                                    st.success("✔️ Wysłano na Discord!")
+                                    st.balloons()
+                                else: st.error("❌ Błąd wysyłania.")
+                            except: st.error("❌ Błąd sieciowy.")
+
+# --- NOWOŚĆ: WYWOŁANIE MODUŁU 4 Z OSOBNEGO PLIKU ---
+elif aktywna_zakladka.startswith("4."):
+    import cfo_analyzer
+    cfo_analyzer.run_module()
 
 else:
     st.title(f"🛠️ {aktywna_zakladka}")
