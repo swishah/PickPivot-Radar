@@ -7,64 +7,109 @@ from bs4 import BeautifulSoup
 from datetime import datetime
 
 # --- 1. USTAWIENIA STRONY ---
-# (Ta sekcja zadziała, jeśli uruchomisz plik jako samodzielną aplikację)
 try:
     st.set_page_config(page_title="PickPivot CFO", page_icon="📈", layout="wide")
 except:
-    pass # Ignoruj, jeśli wywoływane z app.py
+    pass
 
-# --- 2. HYBRYDOWY SILNIK PARSOWANIA ---
+# --- 2. ZAAWANSOWANY SILNIK PARSOWANIA ---
 def parse_financial_hybrid(file_bytes, filename):
     content = file_bytes.decode('utf-8', errors='ignore')
     
     # ---------------------------------------------------------
-    # FAZA 1: Próba odczytu surowego XML (Schemat KRS)
+    # FAZA 1: Odczyt surowego XML/XAdES (Inteligentne schematy KRS)
     # ---------------------------------------------------------
     soup_xml = BeautifulSoup(content, 'xml')
-    def get_xml_value(tag_regex):
-        tag = soup_xml.find(re.compile(tag_regex, re.I))
-        if tag:
-            kwota = tag.find(re.compile('KwotaA', re.I))
-            if kwota and kwota.text:
-                try:
-                    return float(kwota.text.strip())
-                except: pass
+    
+    def get_vals(parent, tag_names):
+        if not parent: return 0.0
+        for name in tag_names:
+            tag = parent.find(name=re.compile(rf'^(.*:)?{name}$', re.I))
+            if tag:
+                kwota = tag.find(name=re.compile(r'^(.*:)?KwotaA$', re.I))
+                if kwota and kwota.text:
+                    try:
+                        return float(kwota.text.strip())
+                    except: pass
         return 0.0
 
-    data_xml = {
-        "AktywaRazem": get_xml_value("AktywaRazem") or get_xml_value("SumaAktywow"),
-        "AktywaObrotowe": get_xml_value("AktywaObrotowe"),
-        "Zapasy": get_xml_value("Zapasy"),
-        "NaleznosciKrotkoterminowe": get_xml_value("NaleznosciKrotkoterminowe"),
-        "InwestycjeKrotkoterminowe": get_value("InwestycjeKrotkoterminowe") if 'get_value' in locals() else get_xml_value("InwestycjeKrotkoterminowe"),
-        "KapitalWlasny": get_xml_value("KapitalFunduszWlasny") or get_xml_value("KapitalWlasny"),
-        "ZobowiazaniaOgolem": get_xml_value("ZobowiazaniaIRezerwyNaZobowiazania") or get_xml_value("ZobowiazaniaOgolem"),
-        "ZobowiazaniaKrotkoterminowe": get_xml_value("ZobowiazaniaKrotkoterminowe"),
-        "PrzychodySprzedaz": get_xml_value("PrzychodyNettoZeSprzedazy") or get_xml_value("PrzychodyNetto"),
-        "ZyskOperacyjny": get_xml_value("ZyskStrataZDzialalnosciOperacyjnej") or get_xml_value("ZyskOperacyjny"),
-        "ZyskBrutto": get_xml_value("ZyskStrataBrutto"),
-        "ZyskNetto": get_xml_value("ZyskStrataNetto"),
-        "KosztyDzialalnosciOperacyjnej": get_xml_value("KosztyDzialalnosciOperacyjnej") or get_xml_value("KosztWytworzeniaSprzedanychProduktow"),
-        "KosztyFinansowe": get_xml_value("KosztyFinansowe")
-    }
-
-    # Jeśli znalazł Aktywa przez XML, przerywa szukanie i zwraca dane
-    if data_xml["AktywaRazem"] > 0:
-        return data_xml, "XML (Surowy plik KRS)"
+    bilans = soup_xml.find(name=re.compile(r'^(.*:)?Bilans.*$', re.I))
+    rzis = soup_xml.find(name=re.compile(r'^(.*:)?RZiS.*$', re.I))
+    
+    aktywa = get_vals(bilans, ['AktywaRazem', 'SumaAktywow', 'Aktywa'])
+    
+    if aktywa > 0:
+        akt_obr = get_vals(bilans, ['AktywaObrotowe', 'Aktywa_B'])
+        zapasy = get_vals(bilans, ['Zapasy', 'Aktywa_B_I'])
+        nal_krotko = get_vals(bilans, ['NaleznosciKrotkoterminowe', 'Aktywa_B_II'])
+        inw_krotko = get_vals(bilans, ['InwestycjeKrotkoterminowe', 'Aktywa_B_III'])
+        kap_wlasny = get_vals(bilans, ['KapitalFunduszWlasny', 'KapitalWlasny', 'Pasywa_A'])
+        zob_ogolem = get_vals(bilans, ['ZobowiazaniaIRezerwyNaZobowiazania', 'ZobowiazaniaOgolem', 'Pasywa_B'])
+        zob_krotko = get_vals(bilans, ['ZobowiazaniaKrotkoterminowe', 'Pasywa_B_III'])
+        
+        przych = get_vals(rzis, ['PrzychodyNettoZeSprzedazy', 'PrzychodyNetto'])
+        zysk_op = get_vals(rzis, ['ZyskStrataZDzialalnosciOperacyjnej'])
+        zysk_brutto = get_vals(rzis, ['ZyskStrataBrutto'])
+        zysk_netto = get_vals(rzis, ['ZyskStrataNetto'])
+        koszty_fin = get_vals(rzis, ['KosztyFinansowe'])
+        
+        koszty_op = get_vals(rzis, ['KosztyDzialalnosciOperacyjnej'])
+        if koszty_op == 0.0:
+            koszty_op = get_vals(rzis, ['KosztWytworzeniaSprzedanychProduktow']) + get_vals(rzis, ['KosztySprzedazy']) + get_vals(rzis, ['KosztyOgolnegoZarzadu'])
+            
+        rzis_kalk = rzis.find(name=re.compile(r'^(.*:)?RZiSKalk$', re.I)) if rzis else None
+        rzis_porown = rzis.find(name=re.compile(r'^(.*:)?RZiSPorown$', re.I)) if rzis else None
+        
+        if rzis_kalk:
+            if przych == 0: przych = get_vals(rzis_kalk, ['A'])
+            if koszty_op == 0: koszty_op = get_vals(rzis_kalk, ['B']) + get_vals(rzis_kalk, ['D'])
+            if zysk_op == 0: zysk_op = get_vals(rzis_kalk, ['E']) + get_vals(rzis_kalk, ['F']) - get_vals(rzis_kalk, ['G'])
+            if koszty_fin == 0: koszty_fin = get_vals(rzis_kalk, ['I'])
+            if zysk_brutto == 0: zysk_brutto = get_vals(rzis_kalk, ['J'])
+            if zysk_netto == 0: zysk_netto = get_vals(rzis_kalk, ['L'])
+        elif rzis_porown:
+            if przych == 0: przych = get_vals(rzis_porown, ['A'])
+            if koszty_op == 0: koszty_op = get_vals(rzis_porown, ['B'])
+            if zysk_op == 0: zysk_op = get_vals(rzis_porown, ['F'])
+            if koszty_fin == 0: koszty_fin = get_vals(rzis_porown, ['H'])
+            if zysk_brutto == 0: zysk_brutto = get_vals(rzis_porown, ['I'])
+            if zysk_netto == 0: zysk_netto = get_vals(rzis_porown, ['L'])
+        elif rzis: 
+            if przych == 0: przych = get_vals(rzis, ['A'])
+            if koszty_op == 0: koszty_op = get_vals(rzis, ['B'])
+            if zysk_op == 0: zysk_op = przych - koszty_op
+            if zysk_netto == 0: zysk_netto = get_vals(rzis, ['F'])
+            if zysk_brutto == 0: zysk_brutto = zysk_netto
+            
+        data_xml = {
+            "AktywaRazem": aktywa,
+            "AktywaObrotowe": akt_obr,
+            "Zapasy": zapasy,
+            "NaleznosciKrotkoterminowe": nal_krotko,
+            "InwestycjeKrotkoterminowe": inw_krotko,
+            "KapitalWlasny": kap_wlasny,
+            "ZobowiazaniaOgolem": zob_ogolem,
+            "ZobowiazaniaKrotkoterminowe": zob_krotko,
+            "PrzychodySprzedaz": przych,
+            "ZyskOperacyjny": zysk_op,
+            "ZyskBrutto": zysk_brutto,
+            "ZyskNetto": zysk_netto,
+            "KosztyDzialalnosciOperacyjnej": koszty_op,
+            "KosztyFinansowe": koszty_fin
+        }
+        return data_xml, "XML/XAdES (Oficjalny algorytm KRS - Zgodność ze schematami)"
 
     # ---------------------------------------------------------
-    # FAZA 2: Próba odczytu wizualnego (Przeglądarka HTML/HTM)
+    # FAZA 2: Odczyt z plików przeglądarkowych HTML
     # ---------------------------------------------------------
     soup_html = BeautifulSoup(content, 'lxml')
     
     def get_html_value(keywords):
         for kw in keywords:
-            # Szukamy tekstu na stronie zbliżonego do słowa kluczowego
             elems = soup_html.find_all(string=re.compile(kw, re.I))
             for elem in elems:
                 parent = elem.find_parent(['td', 'th', 'div', 'span'])
                 if parent:
-                    # Szukamy liczby w następnej kolumnie tabeli (Bieżący rok)
                     for sibling in parent.find_next_siblings(['td', 'th', 'div']):
                         text_val = sibling.get_text(strip=True).replace(' ', '').replace(' ', '').replace(',', '.')
                         try:
@@ -91,9 +136,8 @@ def parse_financial_hybrid(file_bytes, filename):
     }
 
     if data_html["AktywaRazem"] > 0:
-        return data_html, "HTML (Ekstrakcja ze struktury wizualnej)"
+        return data_html, "HTML (Ekstrakcja ze struktury wizualnej przeglądarki)"
 
-    # Jeśli obie metody zawiodą
     return None, "Nie rozpoznano struktury finansowej"
 
 # --- 3. SILNIK OBLICZENIOWY WSKAŹNIKÓW (15 KPI) ---
@@ -159,18 +203,18 @@ def calculate_ratios(data):
 # --- 4. GŁÓWNA FUNKCJA WYSWIETLAJĄCA MODUŁ ---
 def run_module():
     st.title("📈 Analiza Wskaźnikowa z e-Sprawozdań")
-    st.markdown("Automatyczny audyt kondycji finansowej spółki. Silnik rozpoznaje zarówno urzędowe pliki **XML/XAdES**, jak i zapisane z przeglądarki strony **HTML**.")
+    st.markdown("Automatyczny audyt kondycji finansowej spółki. Silnik rozpoznaje urzędowe pliki **XML/XAdES**, dopasowuje strukturę do odpowiedniej Jednostki (Inna, Mała, Mikro) i dokonuje błyskawicznej interpretacji.")
 
     uploaded_file = st.file_uploader("📂 Wgraj plik ze sprawozdaniem finansowym", type=['xml', 'xades', 'html', 'htm'])
 
     if uploaded_file is not None:
         file_bytes = uploaded_file.read()
         
-        with st.spinner("Skanowanie struktury i parsowanie ukrytych tagów..."):
+        with st.spinner("Skanowanie i dopasowywanie struktury pliku..."):
             dane_finansowe, metoda = parse_financial_hybrid(file_bytes, uploaded_file.name)
             
         if not dane_finansowe:
-            st.error("❌ Błąd analizy: System nie odnalazł w pliku danych bilansowych. Upewnij się, że plik zawiera zestawienie Aktywów i Pasywów.")
+            st.error("❌ Błąd analizy: System nie odnalazł kluczowych tagów. Sprawdź, czy plik na pewno pochodzi z systemu eKRS.")
         else:
             st.success(f"✔️ Sprawozdanie rozkodowane pomyślnie! Wykryty format bazy: **{metoda}**")
             
@@ -207,3 +251,7 @@ def run_module():
                 type="primary",
                 use_container_width=True
             )
+
+if __name__ == "__main__":
+    if st.session_state.get('authenticated', False):
+        run_module()
