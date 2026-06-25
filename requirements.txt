@@ -6,3 +6,5 @@ python-docx
 yfinance
 numpy
 xlsxwriter
+beautifulsoup4
+lxml
