@@ -2,43 +2,101 @@ import streamlit as st
 import pandas as pd
 import io
 import re
+import time
 from bs4 import BeautifulSoup
 from datetime import datetime
 
-# --- SILNIK PARSOWANIA XML/XAdES ---
-def parse_financial_xml(file_bytes):
-    soup = BeautifulSoup(file_bytes, 'xml')
+# --- 1. USTAWIENIA STRONY ---
+# (Ta sekcja zadziała, jeśli uruchomisz plik jako samodzielną aplikację)
+try:
+    st.set_page_config(page_title="PickPivot CFO", page_icon="📈", layout="wide")
+except:
+    pass # Ignoruj, jeśli wywoływane z app.py
 
-    def get_value(tag_regex):
-        tag = soup.find(re.compile(tag_regex, re.I))
+# --- 2. HYBRYDOWY SILNIK PARSOWANIA ---
+def parse_financial_hybrid(file_bytes, filename):
+    content = file_bytes.decode('utf-8', errors='ignore')
+    
+    # ---------------------------------------------------------
+    # FAZA 1: Próba odczytu surowego XML (Schemat KRS)
+    # ---------------------------------------------------------
+    soup_xml = BeautifulSoup(content, 'xml')
+    def get_xml_value(tag_regex):
+        tag = soup_xml.find(re.compile(tag_regex, re.I))
         if tag:
             kwota = tag.find(re.compile('KwotaA', re.I))
             if kwota and kwota.text:
                 try:
                     return float(kwota.text.strip())
-                except:
-                    pass
+                except: pass
         return 0.0
 
-    data = {
-        "AktywaRazem": get_value("AktywaRazem") or get_value("SumaAktywow"),
-        "AktywaObrotowe": get_value("AktywaObrotowe"),
-        "Zapasy": get_value("Zapasy"),
-        "NaleznosciKrotkoterminowe": get_value("NaleznosciKrotkoterminowe"),
-        "InwestycjeKrotkoterminowe": get_value("InwestycjeKrotkoterminowe"),
-        "KapitalWlasny": get_value("KapitalFunduszWlasny") or get_value("KapitalWlasny"),
-        "ZobowiazaniaOgolem": get_value("ZobowiazaniaIRezerwyNaZobowiazania") or get_value("ZobowiazaniaOgolem"),
-        "ZobowiazaniaKrotkoterminowe": get_value("ZobowiazaniaKrotkoterminowe"),
-        "PrzychodySprzedaz": get_value("PrzychodyNettoZeSprzedazy") or get_value("PrzychodyNetto"),
-        "ZyskOperacyjny": get_value("ZyskStrataZDzialalnosciOperacyjnej") or get_value("ZyskOperacyjny"),
-        "ZyskBrutto": get_value("ZyskStrataBrutto"),
-        "ZyskNetto": get_value("ZyskStrataNetto"),
-        "KosztyDzialalnosciOperacyjnej": get_value("KosztyDzialalnosciOperacyjnej") or get_value("KosztWytworzeniaSprzedanychProduktow"),
-        "KosztyFinansowe": get_value("KosztyFinansowe")
+    data_xml = {
+        "AktywaRazem": get_xml_value("AktywaRazem") or get_xml_value("SumaAktywow"),
+        "AktywaObrotowe": get_xml_value("AktywaObrotowe"),
+        "Zapasy": get_xml_value("Zapasy"),
+        "NaleznosciKrotkoterminowe": get_xml_value("NaleznosciKrotkoterminowe"),
+        "InwestycjeKrotkoterminowe": get_value("InwestycjeKrotkoterminowe") if 'get_value' in locals() else get_xml_value("InwestycjeKrotkoterminowe"),
+        "KapitalWlasny": get_xml_value("KapitalFunduszWlasny") or get_xml_value("KapitalWlasny"),
+        "ZobowiazaniaOgolem": get_xml_value("ZobowiazaniaIRezerwyNaZobowiazania") or get_xml_value("ZobowiazaniaOgolem"),
+        "ZobowiazaniaKrotkoterminowe": get_xml_value("ZobowiazaniaKrotkoterminowe"),
+        "PrzychodySprzedaz": get_xml_value("PrzychodyNettoZeSprzedazy") or get_xml_value("PrzychodyNetto"),
+        "ZyskOperacyjny": get_xml_value("ZyskStrataZDzialalnosciOperacyjnej") or get_xml_value("ZyskOperacyjny"),
+        "ZyskBrutto": get_xml_value("ZyskStrataBrutto"),
+        "ZyskNetto": get_xml_value("ZyskStrataNetto"),
+        "KosztyDzialalnosciOperacyjnej": get_xml_value("KosztyDzialalnosciOperacyjnej") or get_xml_value("KosztWytworzeniaSprzedanychProduktow"),
+        "KosztyFinansowe": get_xml_value("KosztyFinansowe")
     }
-    return data
 
-# --- SILNIK OBLICZENIOWY WSKAŹNIKÓW (15 KPI) ---
+    # Jeśli znalazł Aktywa przez XML, przerywa szukanie i zwraca dane
+    if data_xml["AktywaRazem"] > 0:
+        return data_xml, "XML (Surowy plik KRS)"
+
+    # ---------------------------------------------------------
+    # FAZA 2: Próba odczytu wizualnego (Przeglądarka HTML/HTM)
+    # ---------------------------------------------------------
+    soup_html = BeautifulSoup(content, 'lxml')
+    
+    def get_html_value(keywords):
+        for kw in keywords:
+            # Szukamy tekstu na stronie zbliżonego do słowa kluczowego
+            elems = soup_html.find_all(string=re.compile(kw, re.I))
+            for elem in elems:
+                parent = elem.find_parent(['td', 'th', 'div', 'span'])
+                if parent:
+                    # Szukamy liczby w następnej kolumnie tabeli (Bieżący rok)
+                    for sibling in parent.find_next_siblings(['td', 'th', 'div']):
+                        text_val = sibling.get_text(strip=True).replace(' ', '').replace(' ', '').replace(',', '.')
+                        try:
+                            if re.match(r'^-?\d+(\.\d+)?$', text_val):
+                                return float(text_val)
+                        except: pass
+        return 0.0
+
+    data_html = {
+        "AktywaRazem": get_html_value(["Aktywa razem", "Suma aktywów"]),
+        "AktywaObrotowe": get_html_value(["Aktywa obrotowe"]),
+        "Zapasy": get_html_value(["Zapasy"]),
+        "NaleznosciKrotkoterminowe": get_html_value(["Należności krótkoterminowe", "Naleznosci krotkoterminowe"]),
+        "InwestycjeKrotkoterminowe": get_html_value(["Inwestycje krótkoterminowe"]),
+        "KapitalWlasny": get_html_value(["Kapitał własny", "Kapitał (fundusz) własny", "Kapital wlasny"]),
+        "ZobowiazaniaOgolem": get_html_value(["Zobowiązania i rezerwy na zobowiązania", "Zobowiązania ogółem"]),
+        "ZobowiazaniaKrotkoterminowe": get_html_value(["Zobowiązania krótkoterminowe"]),
+        "PrzychodySprzedaz": get_html_value(["Przychody netto ze sprzedaży", "Przychody netto", "Przychody ze sprzedaży"]),
+        "ZyskOperacyjny": get_html_value(["Zysk z działalności operacyjnej", "Strata z działalności operacyjnej", "Zysk (strata) z działalności operacyjnej"]),
+        "ZyskBrutto": get_html_value(["Zysk brutto", "Strata brutto", "Zysk (strata) brutto"]),
+        "ZyskNetto": get_html_value(["Zysk netto", "Strata netto", "Zysk (strata) netto"]),
+        "KosztyDzialalnosciOperacyjnej": get_html_value(["Koszty działalności operacyjnej", "Koszty dzialalnosci operacyjnej", "Koszty operacyjne"]),
+        "KosztyFinansowe": get_html_value(["Koszty finansowe"])
+    }
+
+    if data_html["AktywaRazem"] > 0:
+        return data_html, "HTML (Ekstrakcja ze struktury wizualnej)"
+
+    # Jeśli obie metody zawiodą
+    return None, "Nie rozpoznano struktury finansowej"
+
+# --- 3. SILNIK OBLICZENIOWY WSKAŹNIKÓW (15 KPI) ---
 def calculate_ratios(data):
     ratios = []
 
@@ -98,23 +156,23 @@ def calculate_ratios(data):
 
     return pd.DataFrame(ratios)
 
-# --- GŁÓWNA FUNKCJA WYSWIETLAJĄCA MODUŁ ---
+# --- 4. GŁÓWNA FUNKCJA WYSWIETLAJĄCA MODUŁ ---
 def run_module():
     st.title("📈 Analiza Wskaźnikowa z e-Sprawozdań")
-    st.markdown("Automatyczny audyt kondycji finansowej spółki. Wyłapuje 15 najistotniejszych wskaźników z urzędowego pliku XML lub XAdES i dokonuje ich błyskawicznej interpretacji.")
+    st.markdown("Automatyczny audyt kondycji finansowej spółki. Silnik rozpoznaje zarówno urzędowe pliki **XML/XAdES**, jak i zapisane z przeglądarki strony **HTML**.")
 
-    uploaded_file = st.file_uploader("📂 Wgraj sprawozdanie finansowe (*.xml lub *.xades)", type=['xml', 'xades'])
+    uploaded_file = st.file_uploader("📂 Wgraj plik ze sprawozdaniem finansowym", type=['xml', 'xades', 'html', 'htm'])
 
     if uploaded_file is not None:
         file_bytes = uploaded_file.read()
         
-        with st.spinner("Skanowanie i parsowanie ukrytych tagów pliku urzędowego..."):
-            dane_finansowe = parse_financial_xml(file_bytes)
+        with st.spinner("Skanowanie struktury i parsowanie ukrytych tagów..."):
+            dane_finansowe, metoda = parse_financial_hybrid(file_bytes, uploaded_file.name)
             
-        if not dane_finansowe or dane_finansowe["AktywaRazem"] == 0:
-            st.error("❌ Błąd analizy: Nie udało się odnaleźć kluczowych danych finansowych w tym pliku. Upewnij się, że to poprawne e-Sprawozdanie (KRS).")
+        if not dane_finansowe:
+            st.error("❌ Błąd analizy: System nie odnalazł w pliku danych bilansowych. Upewnij się, że plik zawiera zestawienie Aktywów i Pasywów.")
         else:
-            st.success("✔️ Sprawozdanie rozkodowane pomyślnie!")
+            st.success(f"✔️ Sprawozdanie rozkodowane pomyślnie! Wykryty format bazy: **{metoda}**")
             
             with st.expander("🔎 Podgląd wyodrębnionych danych źródłowych (Weryfikacja)"):
                 df_raw = pd.DataFrame(list(dane_finansowe.items()), columns=["Pozycja Bilansowa / RZiS", "Kwota (Bieżący Rok)"])
