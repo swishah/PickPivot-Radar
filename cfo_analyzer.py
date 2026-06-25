@@ -2,43 +2,13 @@ import streamlit as st
 import pandas as pd
 import io
 import re
-import time
 from bs4 import BeautifulSoup
 from datetime import datetime
 
-# --- 1. USTAWIENIA STRONY ---
-st.set_page_config(page_title="PickPivot CFO", page_icon="📈", layout="wide")
-
-# --- 2. SYSTEM LOGOWANIA (Taki sam, by zachować standardy) ---
-if 'authenticated' not in st.session_state:
-    st.session_state['authenticated'] = False
-
-if not st.session_state['authenticated']:
-    st.markdown("<br><br>", unsafe_allow_html=True)
-    col_login, _ = st.columns([1, 2])
-    
-    with col_login:
-        st.title("🔐 Panel PickPivot CFO")
-        st.markdown("Dostęp do modułu audytorskiego wymaga autoryzacji.")
-        
-        username = st.text_input("Login:")
-        password = st.text_input("Hasło:", type="password")
-        
-        if st.button("🚀 Zaloguj się", use_container_width=True, type="primary"):
-            if username == "DORADCA" and password == "kontotestowe413":
-                st.session_state['authenticated'] = True
-                st.success("Autoryzacja pomyślna! Ładowanie modułu...")
-                time.sleep(1)
-                st.rerun()
-            else:
-                st.error("Wprowadzono niepoprawny login lub hasło.")
-    st.stop()
-
-# --- 3. SILNIK PARSOWANIA XML/XAdES ---
+# --- SILNIK PARSOWANIA XML/XAdES ---
 def parse_financial_xml(file_bytes):
     soup = BeautifulSoup(file_bytes, 'xml')
 
-    # Funkcja inteligentnie poszukująca wartości dla bieżącego roku (KwotaA)
     def get_value(tag_regex):
         tag = soup.find(re.compile(tag_regex, re.I))
         if tag:
@@ -50,7 +20,6 @@ def parse_financial_xml(file_bytes):
                     pass
         return 0.0
 
-    # Pobieranie konkretnych pozycji ze sprawozdania
     data = {
         "AktywaRazem": get_value("AktywaRazem") or get_value("SumaAktywow"),
         "AktywaObrotowe": get_value("AktywaObrotowe"),
@@ -69,7 +38,7 @@ def parse_financial_xml(file_bytes):
     }
     return data
 
-# --- 4. SILNIK OBLICZENIOWY WSKAŹNIKÓW (15 KPI) ---
+# --- SILNIK OBLICZENIOWY WSKAŹNIKÓW (15 KPI) ---
 def calculate_ratios(data):
     ratios = []
 
@@ -129,64 +98,49 @@ def calculate_ratios(data):
 
     return pd.DataFrame(ratios)
 
-# --- 5. GŁÓWNY INTERFEJS ---
-st.sidebar.title("📌 Menu PickPivot")
-st.sidebar.markdown(f"Zalogowany jako: **{st.session_state.get('username', 'DORADCA')}**")
-st.sidebar.info("Moduł audytorski działa w odseparowanym środowisku dla maksymalnego bezpieczeństwa.")
+# --- GŁÓWNA FUNKCJA WYSWIETLAJĄCA MODUŁ ---
+def run_module():
+    st.title("📈 Analiza Wskaźnikowa z e-Sprawozdań")
+    st.markdown("Automatyczny audyt kondycji finansowej spółki. Wyłapuje 15 najistotniejszych wskaźników z urzędowego pliku XML lub XAdES i dokonuje ich błyskawicznej interpretacji.")
 
-if st.sidebar.button("🚪 Wyloguj się", use_container_width=True):
-    st.session_state['authenticated'] = False
-    st.rerun()
+    uploaded_file = st.file_uploader("📂 Wgraj sprawozdanie finansowe (*.xml lub *.xades)", type=['xml', 'xades'])
 
-st.sidebar.markdown("---")
-st.sidebar.caption("© 2026 PickPivot CFO Tool")
-
-
-st.title("📈 Analiza Wskaźnikowa z e-Sprawozdań")
-st.markdown("Automatyczny audyt kondycji finansowej spółki. Wyłapuje 15 najistotniejszych wskaźników z urzędowego pliku XML lub XAdES i dokonuje ich błyskawicznej interpretacji.")
-
-uploaded_file = st.file_uploader("📂 Wgraj sprawozdanie finansowe (*.xml lub *.xades)", type=['xml', 'xades'])
-
-if uploaded_file is not None:
-    file_bytes = uploaded_file.read()
-    
-    with st.spinner("Skanowanie i parsowanie ukrytych tagów pliku urzędowego..."):
-        dane_finansowe = parse_financial_xml(file_bytes)
+    if uploaded_file is not None:
+        file_bytes = uploaded_file.read()
         
-    if not dane_finansowe or dane_finansowe["AktywaRazem"] == 0:
-        st.error("❌ Błąd analizy: Nie udało się odnaleźć kluczowych danych finansowych w tym pliku. Upewnij się, że to poprawne e-Sprawozdanie (KRS).")
-    else:
-        st.success("✔️ Sprawozdanie rozkodowane pomyślnie!")
-        
-        with st.expander("🔎 Podgląd wyodrębnionych danych źródłowych (Weryfikacja)"):
-            df_raw = pd.DataFrame(list(dane_finansowe.items()), columns=["Pozycja Bilansowa / RZiS", "Kwota (Bieżący Rok)"])
-            st.dataframe(df_raw, use_container_width=True, hide_index=True)
+        with st.spinner("Skanowanie i parsowanie ukrytych tagów pliku urzędowego..."):
+            dane_finansowe = parse_financial_xml(file_bytes)
             
-        st.markdown("### 📊 Wynik Analizy Wskaźnikowej (Audyt CFO)")
-        df_ratios = calculate_ratios(dane_finansowe)
-        
-        st.dataframe(df_ratios, use_container_width=True, hide_index=True)
-        
-        # --- EKSPORT DO EXCELA ---
-        st.markdown("---")
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            df_ratios.to_excel(writer, sheet_name='Analiza Wskaznikowa', index=False)
-            df_raw.to_excel(writer, sheet_name='Dane Zrodlowe', index=False)
+        if not dane_finansowe or dane_finansowe["AktywaRazem"] == 0:
+            st.error("❌ Błąd analizy: Nie udało się odnaleźć kluczowych danych finansowych w tym pliku. Upewnij się, że to poprawne e-Sprawozdanie (KRS).")
+        else:
+            st.success("✔️ Sprawozdanie rozkodowane pomyślnie!")
             
-            # Formatowanie estetyczne
-            workbook = writer.book
-            worksheet = writer.sheets['Analiza Wskaznikowa']
-            fmt_header = workbook.add_format({'bg_color': '#2C3E50', 'font_color': '#FFFFFF', 'bold': True})
-            for col_num, value in enumerate(df_ratios.columns.values):
-                worksheet.write(0, col_num, value, fmt_header)
-            worksheet.set_column('A:A', 15)
-            worksheet.set_column('B:B', 35)
-            worksheet.set_column('C:C', 12)
-            worksheet.set_column('D:D', 30)
+            with st.expander("🔎 Podgląd wyodrębnionych danych źródłowych (Weryfikacja)"):
+                df_raw = pd.DataFrame(list(dane_finansowe.items()), columns=["Pozycja Bilansowa / RZiS", "Kwota (Bieżący Rok)"])
+                st.dataframe(df_raw, use_container_width=True, hide_index=True)
+                
+            st.markdown("### 📊 Wynik Analizy Wskaźnikowej (Audyt CFO)")
+            df_ratios = calculate_ratios(dane_finansowe)
+            
+            st.dataframe(df_ratios, use_container_width=True, hide_index=True)
+            
+            st.markdown("---")
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                df_ratios.to_excel(writer, sheet_name='Analiza Wskaznikowa', index=False)
+                df_raw.to_excel(writer, sheet_name='Dane Zrodlowe', index=False)
+                
+                workbook = writer.book
+                worksheet = writer.sheets['Analiza Wskaznikowa']
+                fmt_header = workbook.add_format({'bg_color': '#2C3E50', 'font_color': '#FFFFFF', 'bold': True})
+                for col_num, value in enumerate(df_ratios.columns.values):
+                    worksheet.write(0, col_num, value, fmt_header)
+                worksheet.set_column('A:A', 15)
+                worksheet.set_column('B:B', 35)
+                worksheet.set_column('C:C', 12)
+                worksheet.set_column('D:D', 30)
 
-        colA, colB = st.columns(2)
-        with colA:
             st.download_button(
                 label="📥 Pobierz Audyt Wskaźnikowy (Excel)",
                 data=output.getvalue(),
