@@ -1,9 +1,10 @@
 import streamlit as st
 import time
 
+# Załadowanie naszych nowych plików-modułów
 import radar
 import downloader
-import scanner
+import market
 import cfo_analyzer
 
 st.set_page_config(page_title="PickPivot Platform", page_icon="⚡", layout="wide")
@@ -16,15 +17,19 @@ if not st.session_state['authenticated']:
     col_login, _ = st.columns([1, 2])
     with col_login:
         st.title("🔐 Panel PickPivot")
-        u = st.text_input("Login:")
-        p = st.text_input("Hasło:", type="password")
-        if st.button("🚀 Zaloguj się", type="primary"):
-            if u == "DORADCA" and p == "kontotestowe413":
+        st.markdown("Logowanie do systemu modularnego.")
+        username = st.text_input("Login:")
+        password = st.text_input("Hasło:", type="password")
+        
+        if st.button("🚀 Zaloguj się", type="primary", use_container_width=True):
+            if username == "DORADCA" and password == "kontotestowe413":
                 st.session_state['authenticated'] = True
                 st.rerun()
-            else: st.error("Błąd logowania")
+            else:
+                st.error("Błędne dane logowania.")
     st.stop() 
 
+# --- GŁÓWNE MENU BOCZNE ---
 st.sidebar.title("📌 Menu PickPivot")
 aktywna_zakladka = st.sidebar.radio(
     "Wybierz moduł:",
@@ -37,21 +42,22 @@ aktywna_zakladka = st.sidebar.radio(
     ]
 )
 
+st.sidebar.markdown("---")
 if st.sidebar.button("🚪 Wyloguj się", use_container_width=True):
     st.session_state['authenticated'] = False
     st.rerun()
 
-st.sidebar.caption("© 2026 PickPivot v14.0 Modular")
+st.sidebar.caption("© 2026 PickPivot Modular Engine")
 
-# --- SYSTEM ROUTINGU (Przełączanie plików) ---
+# --- KIEROWANIE DO ODPOWIEDNICH PLIKÓW ---
 if aktywna_zakladka.startswith("1."):
     radar.run_module()
 elif aktywna_zakladka.startswith("2."):
     downloader.run_module()
 elif aktywna_zakladka.startswith("3."):
-    scanner.run_module()
+    market.run_module()
 elif aktywna_zakladka.startswith("4."):
     cfo_analyzer.run_module()
 else:
     st.title("🛠️ Moduł w budowie")
-    st.info("Ta funkcjonalność zostanie dodana w przyszłości.")
+    st.info("Ta funkcjonalność zostanie dodana wkrótce.")
