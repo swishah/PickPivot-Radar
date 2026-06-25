@@ -1,15 +1,13 @@
 import os
 import json
 import re
-import io
 import time
 import requests
+import io
 import PyPDF2
 
-# --- STAŁE KONFIGURACYJNE ---
 FOLDER_DOCELOWY = 'PickPivot_Data'
-if not os.path.exists(FOLDER_DOCELOWY):
-    os.makedirs(FOLDER_DOCELOWY)
+if not os.path.exists(FOLDER_DOCELOWY): os.makedirs(FOLDER_DOCELOWY)
 
 PLIK_KONFIGURACJI_M1 = f"{FOLDER_DOCELOWY}/historia_m1.json"
 PLIK_REKORDOW_M1 = f"{FOLDER_DOCELOWY}/baza_tresci_m1.json"
@@ -27,13 +25,8 @@ FRAZY_KLUCZOWE = [
 ]
 
 KODY_PODATKOW = {"PIT": ".4011.", "CIT": ".4010.", "VAT": ".4012.", "AKCYZA": ".4013."}
+MIESIACE_PL = ["Styczeń", "Luty", "Marzec", "Kwiecień", "Maj", "Czerwiec", "Lipiec", "Sierpień", "Wrzesień", "Październik", "Listopad", "Grudzień"]
 
-MIESIACE_PL = [
-    "Styczeń", "Luty", "Marzec", "Kwiecień", "Maj", "Czerwiec",
-    "Lipiec", "Sierpień", "Wrzesień", "Październik", "Listopad", "Grudzień"
-]
-
-# --- FUNKCJE PAMIĘCI ---
 def wczytaj_historie(plik):
     if os.path.exists(plik):
         with open(plik, 'r', encoding='utf-8') as f:
@@ -43,8 +36,7 @@ def wczytaj_historie(plik):
     return {"przetworzone_id": [], "ukonczone_kombinacje": [], "uszkodzone_id": []}
 
 def zapisz_historie(plik, konfiguracja):
-    with open(plik, 'w', encoding='utf-8') as f:
-        json.dump(konfiguracja, f, ensure_ascii=False, indent=4)
+    with open(plik, 'w', encoding='utf-8') as f: json.dump(konfiguracja, f, ensure_ascii=False, indent=4)
 
 def wczytaj_pelne_tresci(plik):
     if os.path.exists(plik):
@@ -52,8 +44,7 @@ def wczytaj_pelne_tresci(plik):
     return []
 
 def zapisz_pelne_tresci(plik, lista_rekordow):
-    with open(plik, 'w', encoding='utf-8') as f:
-        json.dump(lista_rekordow, f, ensure_ascii=False, indent=4)
+    with open(plik, 'w', encoding='utf-8') as f: json.dump(lista_rekordow, f, ensure_ascii=False, indent=4)
 
 def wyczysc_dane_serwera(plik_konf, plik_rekordow):
     if os.path.exists(plik_konf): os.remove(plik_konf)
@@ -63,7 +54,6 @@ def wyczysc_tekst_dla_worda(tekst):
     if not tekst: return ""
     return re.sub(r'[^\x09\x0A\x0D\x20-\x7E\x85\xA0-\uD7FF\uE000-\uFFFD\u10000-\u10FFFF]', '', tekst)
 
-# --- ŁĄCZNOŚĆ Z EUREKA MF ---
 def pobierz_tekst_pdf(id_dokumentu):
     url = PDF_API_URL.format(id=id_dokumentu)
     headers_pdf = {"User-Agent": "Mozilla/5.0", "Referer": "https://eureka.mf.gov.pl/"}
@@ -81,8 +71,7 @@ def pobierz_tekst_pdf(id_dokumentu):
             elif response.status_code in [404, 400]: return None, "BRAK_PLIKU"
             elif response.status_code == 429: time.sleep(5)
             else: time.sleep(2)
-        except:
-            time.sleep(3)
+        except: time.sleep(3)
     return None, "BLOKADA"
 
 def szukaj_w_api_mf(data_start_str, data_koniec_str, fraza, sesja, nazwa_podatku, kod_sygnatury):
@@ -106,8 +95,7 @@ def szukaj_w_api_mf(data_start_str, data_koniec_str, fraza, sesja, nazwa_podatku
                     for k, v in dane.items():
                         if isinstance(v, list) and len(v) > 0 and isinstance(v[0], dict):
                             if 'id' in v[0] or 'ID_INFORMACJI' in v[0]:
-                                wyniki = v
-                                break
+                                wyniki = v; break
                 for d in wyniki:
                     sygnatura = str(d.get('SYG', '')).upper()
                     data_wydania = str(d.get('DT_WYD', '')).split('T')[0]
@@ -118,7 +106,6 @@ def szukaj_w_api_mf(data_start_str, data_koniec_str, fraza, sesja, nazwa_podatku
                 page += 1
                 time.sleep(0.2)
             else: return dokumenty_podatkowe, "ERROR"
-        except requests.exceptions.Timeout: return dokumenty_podatkowe, "TIMEOUT"
         except: return dokumenty_podatkowe, "ERROR"
     return dokumenty_podatkowe, "OK"
 
@@ -142,8 +129,7 @@ def pobierz_wszystko_z_okresu(data_start_str, data_koniec_str, sesja, nazwa_poda
                     for k, v in dane.items():
                         if isinstance(v, list) and len(v) > 0 and isinstance(v[0], dict):
                             if 'id' in v[0] or 'ID_INFORMACJI' in v[0]:
-                                wyniki = v
-                                break
+                                wyniki = v; break
                 for d in wyniki:
                     sygnatura = str(d.get('SYG', '')).upper()
                     data_wydania = str(d.get('DT_WYD', '')).split('T')[0]
@@ -154,6 +140,5 @@ def pobierz_wszystko_z_okresu(data_start_str, data_koniec_str, sesja, nazwa_poda
                 page += 1
                 time.sleep(0.2)
             else: return dokumenty_podatkowe, "ERROR"
-        except requests.exceptions.Timeout: return dokumenty_podatkowe, "TIMEOUT"
         except: return dokumenty_podatkowe, "ERROR"
     return dokumenty_podatkowe, "OK"
