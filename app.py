@@ -4,11 +4,12 @@ import PyPDF2
 import time
 import random
 import io
+import calendar
 import json
 import os
 import re
 import pandas as pd
-from datetime import datetime, date, timedelta
+from datetime import datetime, date
 from docx import Document
 
 # --- 1. USTAWIENIA STRONY (Muszą być na samym początku) ---
@@ -60,7 +61,6 @@ FRAZY_KLUCZOWE = [
     "stacja uzdatniania", "spółka komunalna"
 ]
 
-# Dodano podatek PIT do ogólnej matrycy
 KODY_PODATKOW = {
     "PIT": ".4011.",
     "CIT": ".4010.",
@@ -232,7 +232,7 @@ if st.sidebar.button("🚪 Wyloguj się", use_container_width=True):
     st.rerun()
 
 st.sidebar.markdown("---")
-st.sidebar.caption("© 2026 PickPivot v11.0 (Kalendarz & PIT)")
+st.sidebar.caption("© 2026 PickPivot v11.1 Dynamic Queue")
 
 # --- 7. LOGIKA MODUŁÓW ---
 
@@ -270,7 +270,6 @@ if aktywna_zakladka.startswith("1."):
                 st.rerun()
         st.markdown("---")
 
-    # Interfejs Kalendarza
     col1, col2 = st.columns(2)
     with col1:
         dzisiaj = date.today()
@@ -281,7 +280,7 @@ if aktywna_zakladka.startswith("1."):
 
     if st.button("🚀 Uruchom skanowanie słów kluczowych", use_container_width=True):
         if not wybrany_okres or len(wybrany_okres) != 2 or not wybrane_podatki_ui:
-            st.error("Proszę upewnić się, że wybrano pełny przedział na kalendarzu (data początkowa i końcowa) oraz rodzaj podatku.")
+            st.error("Proszę upewnić się, że wybrano pełny przedział na kalendarzu oraz rodzaj podatku.")
             st.stop()
             
         data_start_str = wybrany_okres[0].strftime('%Y-%m-%d')
@@ -298,7 +297,7 @@ if aktywna_zakladka.startswith("1."):
                 for podatek in wybrane_podatki_ui:
                     klucz_kombinacji = f"M1_{data_start_str}_{data_koniec_str}_{fraza}_{podatek}"
                     if klucz_kombinacji in ukonczone_kombinacje:
-                        zapytania_wykonane += 1
+                        zapytanya_wykonane += 1
                         continue
                     
                     status_tekst.info(f"Radar odpytuje przedział {data_start_str} - {data_koniec_str}: {fraza} ({podatek})...")
@@ -373,7 +372,7 @@ elif aktywna_zakladka.startswith("2."):
         st.success(f"💾 BAZA ŚCIĄGACZA: W pamięci podręcznej serwera zabezpieczono {len(pelne_tresci_m2)} dokumentów. Zignorowano {len(uszkodzone_id_m2)} pustych rekordów w MF.")
         if pelne_tresci_m2:
             if st.button("📄 GENERUJ ARCHIWUM WORD (.docx)", use_container_width=True, type="primary"):
-                with st.spinner("Składanie potężnego dokumentu... Może to chwilę potrwać..."):
+                with st.spinner("Składanie rozbudowanego dokumentu... Może to chwilę potrwać..."):
                     doc = Document()
                     doc.add_heading('Kompleksowe Archiwum Orzecznictwa', 0)
                     for rekord in pelne_tresci_m2:
@@ -406,11 +405,9 @@ elif aktywna_zakladka.startswith("2."):
     run_loop = btn_wznow or btn_od_nowa or st.session_state.get('auto_resume_m2', False)
 
     if run_loop:
-        # Odzyskiwanie lub zapisywanie parametrów sesji
         if st.session_state.get('auto_resume_m2', False):
             wybrany_okres_m2 = st.session_state.get('saved_okres_m2', wybrany_okres_m2)
             wybrane_podatki_ui_m2 = st.session_state.get('saved_pod_m2', wybrane_podatki_ui_m2)
-            st.session_state['auto_resume_m2'] = False
         else:
             if not wybrany_okres_m2 or len(wybrany_okres_m2) != 2 or not wybrane_podatki_ui_m2:
                 st.error("Proszę wybrać pełny okres na kalendarzu (od - do) oraz rodzaj podatku.")
@@ -427,28 +424,45 @@ elif aktywna_zakladka.startswith("2."):
             przetworzone_id_m2 = set()
             uszkodzone_id_m2 = set()
             pelne_tresci_m2 = []
+            if 'queue_m2' in st.session_state:
+                del st.session_state['queue_m2']
             st.toast("🧹 Pamięć wyczyszczona. Rozpoczynam od zera.")
+
+        if btn_wznow:
+            if 'queue_m2' in st.session_state:
+                del st.session_state['queue_m2']
 
         status_tekst = st.empty()
         log_szczegolowy = st.empty()
 
-        status_tekst.info(f"🔍 Krok 1/2: Odpytywanie serwerów MF dla przedziału {data_start_str} - {data_koniec_str}. Zliczam bazę...")
-        
-        wszystkie_orzeczenia_w_mf = []
-        do_pobrania_teraz = []
+        # CRITICAL BUG FIX: Sprawdzamy czy wracamy po blokadzie. Jeśli tak, wczytujemy zapisaną wcześniej kolejkę z pamięci RAM.
+        if st.session_state.get('auto_resume_m2', False) and 'queue_m2' in st.session_state:
+            do_pobrania_teraz = st.session_state['queue_m2']
+            laczna_liczba_orzeczen = st.session_state.get('laczna_orzeczen_m2', len(do_pobrania_teraz))
+            liczba_brakujacych = len(do_pobrania_teraz)
+            status_tekst.success("▶️ Kolejka przywrócona pomyślnie. Kontynuuję od zablokowanego elementu...")
+        else:
+            # Uruchamiane tylko za pierwszym razem (Faza 1)
+            status_tekst.info(f"🔍 Krok 1/2: Odpytywanie serwerów MF dla przedziału {data_start_str} - {data_koniec_str}. Zliczam bazę...")
+            wszystkie_orzeczenia_w_mf = []
+            do_pobrania_teraz = []
 
-        with requests.Session() as sesja_bazy:
-            for podatek in wybrane_podatki_ui_m2:
-                log_szczegolowy.text(f"Zliczanie dokumentów ({podatek})...")
-                lista_trafien, _ = pobierz_wszystko_z_okresu(data_start_str, data_koniec_str, sesja_bazy, podatek, KODY_PODATKOW[podatek])
-                
-                for dok in lista_trafien:
-                    wszystkie_orzeczenia_w_mf.append(dok)
-                    if dok["id"] not in przetworzone_id_m2 and dok["id"] not in uszkodzone_id_m2:
-                        do_pobrania_teraz.append(dok)
+            with requests.Session() as sesja_bazy:
+                for podatek in wybrane_podatki_ui_m2:
+                    log_szczegolowy.text(f"Zliczanie dokumentów ({podatek})...")
+                    lista_trafien, _ = pobierz_wszystko_z_okresu(data_start_str, data_koniec_str, sesja_bazy, podatek, KODY_PODATKOW[podatek])
+                    
+                    for dok in lista_trafien:
+                        wszystkie_orzeczenia_w_mf.append(dok)
+                        if dok["id"] not in przetworzone_id_m2 and dok["id"] not in uszkodzone_id_m2:
+                            do_pobrania_teraz.append(dok)
 
-        laczna_liczba_orzeczen = len(wszystkie_orzeczenia_w_mf)
-        liczba_brakujacych = len(do_pobrania_teraz)
+            laczna_liczba_orzeczen = len(wszystkie_orzeczenia_w_mf)
+            liczba_brakujacych = len(do_pobrania_teraz)
+            st.session_state['laczna_orzeczen_m2'] = laczna_liczba_orzeczen
+
+        # Wyłączamy flagę auto_resume po poprawnym załadowaniu zmiennych pętli
+        st.session_state['auto_resume_m2'] = False
 
         st.markdown(f"### 📊 Raport przedstartowy:")
         st.info(f"Odnaleziono łącznie: **{laczna_liczba_orzeczen}** interpretacji zgłoszonych w bazie dla wskazanego okresu.")
@@ -459,8 +473,9 @@ elif aktywna_zakladka.startswith("2."):
             log_szczegolowy.empty()
             st.stop()
 
-        time.sleep(2)
+        time.sleep(1)
 
+        # Faza 2: Iteracyjne pobieranie
         status_tekst.info(f"⏳ Krok 2/2: Pobieranie plików z serwerów MF (0 / {liczba_brakujacych})...")
         pasek_postepu = st.progress(0)
         
@@ -470,6 +485,9 @@ elif aktywna_zakladka.startswith("2."):
 
         for idx, dok in enumerate(do_pobrania_teraz):
             log_szczegolowy.text(f"Pobieram plik ({idx+1}/{liczba_brakujacych}): {dok['sygnatura']}...")
+            
+            # Bezpieczny zapis aktualnego wycinka kolejki na wypadek nagłego rozłączenia sieci
+            st.session_state['queue_m2'] = do_pobrania_teraz[idx:]
             
             tekst, status_pobr = pobierz_tekst_pdf(dok["id"])
             if tekst:
@@ -486,8 +504,10 @@ elif aktywna_zakladka.startswith("2."):
                     konfiguracja_m2["uszkodzone_id"].append(dok["id"])
                     licznik_uszkodzonych_w_sesji += 1
                 else:
+                    # BLOKADA SIECIOWA: Zabezpieczamy stan i blokujemy ekran
                     st.session_state['lockout_active_m2'] = True
                     st.session_state['lockout_start_m2'] = time.time()
+                    st.session_state['queue_m2'] = do_pobrania_teraz[idx:] # Zapamiętujemy zadania od tego indeksu
                     zapisz_pelne_tresci(PLIK_REKORDOW_M2, aktualne_tresci_m2)
                     zapisz_historie(PLIK_KONFIGURACJI_M2, konfiguracja_m2)
                     st.toast("⚠️ Wykryto blokadę! Zabezpieczam dane i aktywuję śluzę ochronną.")
@@ -500,6 +520,10 @@ elif aktywna_zakladka.startswith("2."):
             status_tekst.info(f"⏳ Zabezpieczono {licznik_pobranych_w_sesji} | Puste w MF: {licznik_uszkodzonych_w_sesji} | Zostało: {liczba_brakujacych - (idx + 1)}")
             pasek_postepu.progress((idx + 1) / liczba_brakujacych)
             time.sleep(random.uniform(1.5, 2.5))
+
+        # Po pomyślnym ukończeniu całej kolejki usuwamy ją z pamięci tymczasowej
+        if 'queue_m2' in st.session_state:
+            del st.session_state['queue_m2']
 
         status_tekst.success(f"🎉 SUKCES! Zakończono sprawdzanie {liczba_brakujacych} plików. Skrypt pomyślnie zgrał {licznik_pobranych_w_sesji} dokumentów.")
         log_szczegolowy.empty()
