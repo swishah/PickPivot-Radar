@@ -63,6 +63,9 @@ def run_module():
             przetworzone_id, uszkodzone_id, pelne_tresci = set(), set(), []
             st.session_state.pop('queue_m2', None)
 
+        znalezione_ogolem = 0
+        bledy_api = 0
+
         if st.session_state.get('auto_resume_m2', False) and 'queue_m2' in st.session_state:
             do_pobrania = st.session_state['queue_m2']
         else:
@@ -71,13 +74,11 @@ def run_module():
                 
             wybrane_miesiace = [utils.MIESIACE_PL.index(m) + 1 for m in wybrane_miesiace_ui]
             do_pobrania = []
-            bledy_api = 0
-            znalezione_ogolem = 0
             
             status_zliczania = st.empty()
             with requests.Session() as sesja:
                 for rok in wybrane_lata:
-                    for mies in wybrane_miesiace:
+                    for mies in wybrane_miesiace:  # Błąd naprawiony - poprawna składnia Pythona!
                         _, ost = calendar.monthrange(rok, mies)
                         for pod in wybrane_podatki:
                             status_zliczania.info(f"🔍 Pytam serwer MF o: {mies:02d}/{rok} ({pod})...")
@@ -103,7 +104,7 @@ def run_module():
         st.session_state['auto_resume_m2'] = False
         
         if not do_pobrania: 
-            if znalezione_ogolem == 0:
+            if znalezione_ogolem == 0 and not st.session_state.get('auto_resume_m2', False):
                 st.warning("⚠️ System urzędowy nie zwrócił ŻADNYCH interpretacji dla tej kombinacji dat i podatku.")
             else:
                 st.success("✔️ Wszystkie znalezione dokumenty są już na Twoim dysku (Brak nowych do pobrania).")
@@ -138,4 +139,5 @@ def run_module():
             time.sleep(random.uniform(1.5, 2.5))
             
         st.session_state.pop('queue_m2', None)
-        status.success("🎉 Koniec! Pliki zostały pobrane."); st.rerun()
+        status.success("🎉 Koniec! Pliki zostały pobrane.")
+        st.rerun()
