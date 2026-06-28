@@ -1190,25 +1190,30 @@ def run_module():
         st.warning("Brak wyników — sprawdź, czy wybrane wskaźniki mają dane w sprawozdaniu.")
         return
 
-    # Tabela z kolorami
+    # Tabela z kolorami — kompatybilna z pandas < 2.1 i >= 2.1
     def kolor_statusu(val):
         if "🟢" in str(val): return "background-color: #D5F5E3"
         if "🟡" in str(val): return "background-color: #FEF9E7"
         if "🔴" in str(val): return "background-color: #FADBD8"
         return ""
 
+    def _style(df_in):
+        """applymap usunięte w pandas 2.1+ — używamy map() z fallbackiem."""
+        styler = df_in.style
+        try:
+            return styler.map(kolor_statusu, subset=["Status"])
+        except AttributeError:
+            return styler.applymap(kolor_statusu, subset=["Status"])
+
     df_display = df_wyniki.drop(columns=["_id"]).copy()
     df_display["Wynik"] = df_display["Wynik"].apply(lambda x: round(float(x), 2))
-
-    styled = df_display.style.applymap(kolor_statusu, subset=["Status"])
 
     # Wyświetlenie per grupa
     for grupa in df_wyniki["Grupa"].unique():
         sub = df_wyniki[df_wyniki["Grupa"] == grupa].drop(columns=["_id"]).copy()
         sub["Wynik"] = sub["Wynik"].apply(lambda x: round(float(x), 2))
         st.markdown(f"#### {grupa}")
-        sub_styled = sub.style.applymap(kolor_statusu, subset=["Status"])
-        st.dataframe(sub_styled, use_container_width=True, hide_index=True)
+        st.dataframe(_style(sub), use_container_width=True, hide_index=True)
 
     # ── METRYKI PODSUMOWUJĄCE ──────────────────────────────────────────────
     st.markdown("---")
