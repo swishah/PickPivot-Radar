@@ -249,28 +249,70 @@ def pobierz_dokumenty_rownolegle(
 # ---------------------------------------------------------------------------
 # POBIERANIE LISTY DOKUMENTÓW Z API MF (bez zmian w logice, tylko cleanup)
 # ---------------------------------------------------------------------------
+# Rotacja User-Agent - mniejsze ryzyko blokady
+_UA_LIST = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Safari/605.1.15",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
+]
+_ua_idx = 0
+
 def _wykonaj_zapytanie_api(sesja, url, payload, timeout=15):
-    """Wspólna logika zapytania POST do Eureka API."""
-    try:
-        r = sesja.post(
-            url, json=payload,
-            headers={"User-Agent": "Mozilla/5.0", "Content-Type": "application/json"},
-            timeout=timeout
-        )
-        if r.status_code != 200:
-            return [], "ERROR"
-        dane    = r.json()
-        wyniki  = dane.get('content') or dane.get('items') or []
-        if not wyniki:
-            for v in dane.values():
-                if (isinstance(v, list) and v
-                        and isinstance(v[0], dict)
-                        and ('id' in v[0] or 'ID_INFORMACJI' in v[0])):
-                    wyniki = v
-                    break
-        return wyniki, "OK"
-    except Exception:
-        return [], "ERROR"
+    """Wspólna logika zapytania POST do Eureka API z retry i rotacja UA."""
+    global _ua_idx
+    MAKS_PROB = 3
+
+    for proba in range(MAKS_PROB):
+        try:
+            ua = _UA_LIST[_ua_idx % len(_UA_LIST)]
+            _ua_idx += 1
+            r = sesja.post(
+                url, json=payload,
+                headers={
+                    "User-Agent": ua,
+                    "Content-Type": "application/json",
+                    "Accept": "application/json, text/plain, */*",
+                    "Accept-Language": "pl-PL,pl;q=0.9,en-US;q=0.8",
+                    "Origin": "https://eureka.mf.gov.pl",
+                    "Referer": "https://eureka.mf.gov.pl/",
+                },
+                timeout=timeout
+            )
+
+            if r.status_code == 200:
+                dane   = r.json()
+                wyniki = dane.get("content") or dane.get("items") or []
+                if not wyniki:
+                    for v in dane.values():
+                        if (isinstance(v, list) and v
+                                and isinstance(v[0], dict)
+                                and ("id" in v[0] or "ID_INFORMACJI" in v[0])):
+                            wyniki = v
+                            break
+                return wyniki, "OK"
+
+            elif r.status_code == 429:
+                # Rate limit - czekaj coraz dluzej
+                czas = 10 * (proba + 1)
+                time.sleep(czas)
+                continue
+
+            elif r.status_code in (403, 503):
+                # Potencjalna blokada - dluzsze czekanie
+                time.sleep(15 * (proba + 1))
+                continue
+
+            else:
+                return [], f"ERROR_{r.status_code}"
+
+        except requests.exceptions.Timeout:
+            time.sleep(5)
+            continue
+        except Exception:
+            time.sleep(3)
+            continue
+
+    return [], "ERROR"
 
 def _mapuj_dokument(d, nazwa_podatku, kod_sygnatury):
     sygnatura = str(d.get('SYG', '')).upper()
