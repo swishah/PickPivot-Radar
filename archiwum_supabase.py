@@ -1,11 +1,5 @@
 """
 archiwum_supabase.py — Trwałe archiwum interpretacji podatkowych w PostgreSQL (Supabase).
-
-Identyczny interfejs publiczny jak archiwum_drive.py — zamień import w downloader.py:
-    import archiwum_supabase as archiwum
-
-Schemat bazy tworzy się automatycznie przy pierwszym uruchomieniu.
-Darmowy plan Supabase: 500 MB / ~50 000 wierszy — wystarczy na lata.
 """
 
 import streamlit as st
@@ -24,7 +18,6 @@ _db_lock = threading.Lock()
 def _polaczenie():
     """
     Tworzy i cachuje połączenie z Supabase PostgreSQL.
-    Czyta URL z st.secrets["supabase"]["url"].
     """
     try:
         url  = st.secrets["supabase"]["url"]
@@ -37,193 +30,117 @@ def _polaczenie():
         return None
 
 def _kursor(conn):
-    """Zwraca kursor zwracający słowniki (DictCursor)."""
     return conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
 # ---------------------------------------------------------------------------
-# SCHEMAT BAZY — tworzy się automatycznie
+# SCHEMAT BAZY
 # ---------------------------------------------------------------------------
-SCHEMA_SQL = """
-CREATE TABLE IF NOT EXISTS dokumenty (
-    id          TEXT PRIMARY KEY,
-    sygnatura   TEXT        NOT NULL,
-    podatek     TEXT        NOT NULL,
-    data_wyd    TEXT        NOT NULL,
-    link        TEXT        NOT NULL,
-    tekst       TEXT        NOT NULL,
-    format_zr   TEXT        DEFAULT 'HTML+PDF',
-    pobrano_kto TEXT        DEFAULT 'system',
-    pobrano_dt  TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_dok_podatek_data ON dokumenty(podatek, data_wyd);
-CREATE INDEX IF NOT EXISTS idx_dok_sygnatura    ON dokumenty(sygnatura);
-
-CREATE TABLE IF NOT EXISTS kombinacje_ukonczone (
-    klucz           TEXT PRIMARY KEY,
-    data_skanowania TIMESTAMPTZ DEFAULT NOW()
-);
-"""
-
 def _stworz_tabele(conn):
-    with _kursor(conn) as cur:
-        cur.execute(SCHEMA_SQL)
-    conn.commit()
+    with _db_lock:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS interpretacje (
+                    id_dokumentu VARCHAR(64) PRIMARY KEY,
+                    sygnatura VARCHAR(255) NOT NULL,
+                    podatek VARCHAR(50),
+                    data_wyd DATE,
+                    link TEXT,
+                    tekst TEXT,
+                    zrodlo VARCHAR(100),
+                    data_dodania TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS kombinacje_ukonczone (
+                    klucz VARCHAR(100) PRIMARY KEY,
+                    data_zakonczenia TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_sygnatura ON interpretacje (sygnatura);
+            """)
+        conn.commit()
 
 # ---------------------------------------------------------------------------
-# ZAPIS
+# INTERFEJS PUBLICZNY
 # ---------------------------------------------------------------------------
-def zapisz_wiele_do_archiwum(rekordy: list, pobrano_kto: str = "system") -> int:
-    """
-    Masowy zapis rekordów. Pomija duplikaty (ON CONFLICT DO NOTHING).
-    Zwraca liczbę faktycznie nowych rekordów.
-    """
-    if not rekordy:
-        return 0
+def wczytaj_wiele_z_archiwum(lista_sygnatur: list) -> list:
+    if not lista_sygnatur: return []
     conn = _polaczenie()
-    if not conn:
-        return 0
-
-    dane = [
-        (
-            _id_z_rekordu(r),
-            r["Sygnatura"],
-            r["Podatek"],
-            r["Data"],
-            r["Link"],
-            r["Tekst"],
-            r.get("Format", "HTML+PDF"),
-            pobrano_kto,
-        )
-        for r in rekordy
-    ]
-
-    sql = """
-        INSERT INTO dokumenty (id, sygnatura, podatek, data_wyd, link, tekst, format_zr, pobrano_kto)
-        VALUES %s
-        ON CONFLICT (id) DO NOTHING
-    """
+    if not conn: return []
+    
     with _db_lock:
         try:
             with _kursor(conn) as cur:
-                psycopg2.extras.execute_values(cur, sql, dane, page_size=200)
-                nowych = cur.rowcount
-            conn.commit()
-            # Wyczyść cache po zapisie
-            pobierz_id_z_archiwum.clear()
-            return nowych
+                query = "SELECT * FROM interpretacje WHERE sygnatura = ANY(%s);"
+                cur.execute(query, (lista_sygnatur,))
+                rows = cur.fetchall()
+                return [_row_do_rekordu(row) for row in rows]
         except Exception as e:
             conn.rollback()
-            st.warning(f"⚠️ Błąd zapisu do Supabase: {e}")
+            st.error(f"Błąd odczytu z bazy: {e}")
+            return []
+
+def zapisz_wiele_do_archiwum(rekordy: list, zrodlo: str = "downloader") -> int:
+    if not rekordy: return 0
+    conn = _polaczenie()
+    if not conn: return 0
+    
+    wstawione = 0
+    with _db_lock:
+        try:
+            with conn.cursor() as cur:
+                query = """
+                    INSERT INTO interpretacje (id_dokumentu, sygnatura, podatek, data_wyd, link, tekst, zrodlo)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (id_dokumentu) DO NOTHING;
+                """
+                dane = []
+                for r in rekordy:
+                    d_id = _id_z_rekordu(r)
+                    dane.append((d_id, r.get("Sygnatura"), r.get("Podatek"), r.get("Data"), r.get("Link"), r.get("Tekst"), zrodlo))
+                
+                psycopg2.extras.execute_batch(cur, query, dane)
+                wstawione = cur.rowcount
+            conn.commit()
+            return wstawione
+        except Exception as e:
+            conn.rollback()
+            st.error(f"Błąd zapisu do bazy: {e}")
             return 0
 
-# ---------------------------------------------------------------------------
-# KOMBINACJE UKOŃCZONE
-# ---------------------------------------------------------------------------
 def oznacz_kombinacje(podatek: str, rok: int, miesiac: int):
-    """Oznacza period jako w pełni pobrany."""
+    conn = _polaczenie()
+    if not conn: return
+    
     klucz = _klucz_kombinacji(podatek, rok, miesiac)
-    conn  = _polaczenie()
-    if not conn:
-        return
     with _db_lock:
         try:
-            with _kursor(conn) as cur:
-                cur.execute(
-                    "INSERT INTO kombinacje_ukonczone (klucz) VALUES (%s) ON CONFLICT DO NOTHING",
-                    (klucz,)
-                )
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO kombinacje_ukonczone (klucz) VALUES (%s)
+                    ON CONFLICT (klucz) DO NOTHING;
+                """, (klucz,))
             conn.commit()
-            pobierz_ukonczone_kombinacje.clear()
-        except Exception as e:
+        except Exception:
             conn.rollback()
-            st.warning(f"⚠️ Błąd oznaczania kombinacji: {e}")
 
-@st.cache_data(ttl=120, show_spinner=False)
-def pobierz_ukonczone_kombinacje() -> set:
-    """Zwraca set kluczy kombinacji w pełni pobranych. Cache 2 minuty."""
+def pobierz_statystyki() -> dict:
     conn = _polaczenie()
     if not conn:
-        return set()
-    with _kursor(conn) as cur:
-        cur.execute("SELECT klucz FROM kombinacje_ukonczone")
-        return {r["klucz"] for r in cur.fetchall()}
-
-# ---------------------------------------------------------------------------
-# ODCZYT
-# ---------------------------------------------------------------------------
-@st.cache_data(ttl=60, show_spinner=False)
-def pobierz_id_z_archiwum() -> set:
-    """
-    Zwraca set wszystkich ID dokumentów w archiwum.
-    Cache 60 sekund — błyskawiczne sprawdzanie duplikatów.
-    """
-    conn = _polaczenie()
-    if not conn:
-        return set()
-    with _kursor(conn) as cur:
-        cur.execute("SELECT id FROM dokumenty")
-        return {r["id"] for r in cur.fetchall()}
-
-def pobierz_rekordy_z_archiwum(
-    podatek: str = None,
-    rok: int = None,
-    miesiac: int = None,
-) -> list:
-    """
-    Pobiera rekordy z bazy z opcjonalnym filtrowaniem.
-    Zwraca listę słowników w formacie zgodnym z downloader.py.
-    """
-    conn = _polaczenie()
-    if not conn:
-        return []
-
-    klauzule = []
-    params   = []
-
-    if podatek:
-        klauzule.append("podatek = %s")
-        params.append(podatek)
-    if rok and miesiac:
-        klauzule.append("data_wyd LIKE %s")
-        params.append(f"{rok}-{miesiac:02d}%")
-    elif rok:
-        klauzule.append("data_wyd LIKE %s")
-        params.append(f"{rok}%")
-
-    where = f"WHERE {' AND '.join(klauzule)}" if klauzule else ""
-    sql   = f"SELECT * FROM dokumenty {where} ORDER BY data_wyd DESC"
-
-    with _kursor(conn) as cur:
-        cur.execute(sql, params)
-        return [_row_do_rekordu(r) for r in cur.fetchall()]
-
-# ---------------------------------------------------------------------------
-# STATYSTYKI
-# ---------------------------------------------------------------------------
-def statystyki_archiwum() -> dict:
-    """Zwraca statystyki archiwum do wyświetlenia w UI."""
-    conn = _polaczenie()
-    if not conn:
-        return {
-            "total": 0, "per_podatek": {}, "ostatnie_pobranie": "—",
-            "ukonczone_kombinacje": 0, "polaczenie": False
-        }
+        return {"total": 0, "per_podatek": {}, "ostatnie_pobranie": "—", "ukonczone_kombinacje": 0, "polaczenie": False}
+        
     try:
         with _kursor(conn) as cur:
-            cur.execute("SELECT COUNT(*) AS n FROM dokumenty")
+            cur.execute("SELECT COUNT(*) AS n FROM interpretacje")
             total = cur.fetchone()["n"]
 
-            cur.execute(
-                "SELECT podatek, COUNT(*) AS n FROM dokumenty GROUP BY podatek ORDER BY n DESC"
-            )
-            per_podatek = {r["podatek"]: r["n"] for r in cur.fetchall()}
+            cur.execute("SELECT podatek, COUNT(*) AS n FROM interpretacje GROUP BY podatek")
+            per_podatek = {row["podatek"]: row["n"] for row in cur.fetchall()}
 
-            cur.execute(
-                "SELECT pobrano_dt FROM dokumenty ORDER BY pobrano_dt DESC LIMIT 1"
-            )
+            cur.execute("SELECT MAX(data_dodania) AS ost FROM interpretacje")
             row_ost = cur.fetchone()
-            ostatnie = str(row_ost["pobrano_dt"])[:10] if row_ost else "—"
+            ostatnie = str(row_ost["ost"])[:10] if row_ost and row_ost["ost"] else "—"
 
             cur.execute("SELECT COUNT(*) AS n FROM kombinacje_ukonczone")
             ukonczone = cur.fetchone()["n"]
@@ -235,11 +152,8 @@ def statystyki_archiwum() -> dict:
             "ukonczone_kombinacje": ukonczone,
             "polaczenie":           True,
         }
-    except Exception as e:
-        return {
-            "total": 0, "per_podatek": {}, "ostatnie_pobranie": "—",
-            "ukonczone_kombinacje": 0, "polaczenie": False
-        }
+    except Exception:
+        return {"total": 0, "per_podatek": {}, "ostatnie_pobranie": "—", "ukonczone_kombinacje": 0, "polaczenie": False}
 
 # ---------------------------------------------------------------------------
 # POMOCNICZE
@@ -258,12 +172,10 @@ def _id_z_rekordu(r: dict) -> str:
 
 def _row_do_rekordu(row) -> dict:
     return {
-        "Data":      row["data_wyd"],
+        "Data":      str(row["data_wyd"]) if row["data_wyd"] else "",
         "Podatek":   row["podatek"],
         "Sygnatura": row["sygnatura"],
         "Link":      row["link"],
         "Tekst":     row["tekst"],
-        "Format":    row["format_zr"],
-        "Pobrano":   str(row.get("pobrano_dt", "")),
-        "_id":       row["id"],
+        "_id":       row["id_dokumentu"]
     }
