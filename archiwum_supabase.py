@@ -219,20 +219,31 @@ def pobierz_rekordy_z_archiwum(podatek=None, rok=None, miesiac=None) -> list:
 
 
 # ---------------------------------------------------------------------------
-# STATYSTYKI
+# STATYSTYKI — jedno polaczenie, jedno zapytanie
 # ---------------------------------------------------------------------------
 def statystyki_archiwum() -> dict:
     try:
         _inicjalizuj()
-        total = _q("SELECT COUNT(*) AS n FROM dokumenty", fetch=True)[0]["n"]
-        per   = {r["podatek"]: r["n"] for r in _q(
+        # Wszystko w jednym zapytaniu zeby nie tworzyc 4 polaczen
+        sql = """
+            SELECT
+                (SELECT COUNT(*) FROM dokumenty) AS total,
+                (SELECT COUNT(*) FROM kombinacje_ukonczone) AS ukonczone,
+                (SELECT pobrano_dt FROM dokumenty ORDER BY pobrano_dt DESC LIMIT 1) AS ostatnie
+        """
+        row = _q(sql, fetch=True)
+        if not row:
+            return {"total":0,"per_podatek":{},"ostatnie_pobranie":"—",
+                    "ukonczone_kombinacje":0,"polaczenie":True}
+        r = row[0]
+        per = {p["podatek"]: p["n"] for p in _q(
             "SELECT podatek, COUNT(*) AS n FROM dokumenty GROUP BY podatek ORDER BY n DESC",
             fetch=True)}
-        ost   = _q("SELECT pobrano_dt FROM dokumenty ORDER BY pobrano_dt DESC LIMIT 1", fetch=True)
-        uk    = _q("SELECT COUNT(*) AS n FROM kombinacje_ukonczone", fetch=True)[0]["n"]
-        return {"total": total, "per_podatek": per,
-                "ostatnie_pobranie": ost[0]["pobrano_dt"][:10] if ost else "—",
-                "ukonczone_kombinacje": uk, "polaczenie": True}
+        ost = str(r["ostatnie"])[:10] if r["ostatnie"] else "—"
+        return {"total": r["total"], "per_podatek": per,
+                "ostatnie_pobranie": ost,
+                "ukonczone_kombinacje": r["ukonczone"],
+                "polaczenie": True}
     except Exception:
         return {"total":0,"per_podatek":{},"ostatnie_pobranie":"—",
                 "ukonczone_kombinacje":0,"polaczenie":False}
