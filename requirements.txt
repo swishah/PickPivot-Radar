@@ -8,4 +8,4 @@ numpy
 xlsxwriter
 beautifulsoup4
 lxml
-pg8000
+psycopg2-binary
