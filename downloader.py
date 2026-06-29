@@ -1,8 +1,6 @@
 """
 downloader.py - Sciagacz Interpretacji v3
-Automatycznie wykrywa backend archiwum z Streamlit Secrets:
-  - [supabase] url        -> uzywa archiwum_supabase.py
-  - [google_drive] folder_id -> uzywa archiwum_drive.py
+Backend archiwum wykrywany LAZILY przy pierwszym wywolaniu run_module().
 """
 
 import streamlit as st
@@ -16,30 +14,43 @@ import utils
 
 CZAS_LOCKOUT_S = 300
 
+
 # ---------------------------------------------------------------------------
-# AUTOMATYCZNY WYBOR BACKENDU ARCHIWUM
-# Sprawdza Secrets i importuje odpowiedni modul.
+# LAZY LOADING BACKENDU — wywolywane wewnatrz run_module(), nie przy imporcie
 # ---------------------------------------------------------------------------
+def _get_archiwum():
+    """
+    Zwraca (modul_archiwum, nazwa) lub (None, None).
+    Cachowane w session_state zeby nie importowac przy kazdym rerunie.
+    """
+    if "arch_mod" not in st.session_state:
+        mod, nazwa = _wykryj_archiwum()
+        st.session_state["arch_mod"]   = mod
+        st.session_state["arch_nazwa"] = nazwa
+    return st.session_state["arch_mod"], st.session_state["arch_nazwa"]
+
+
 def _wykryj_archiwum():
     try:
-        if "supabase" in st.secrets:
-            url = st.secrets["supabase"].get("url", "")
-            if url and url.startswith("postgresql"):
+        sec = st.secrets
+        if "supabase" in sec:
+            s = sec["supabase"]
+            ma_host = bool(s.get("host","")) and bool(s.get("user","")) and bool(s.get("password",""))
+            ma_url  = str(s.get("url","")).startswith("postgresql")
+            if ma_host or ma_url:
                 import archiwum_supabase as _arch
                 return _arch, "Supabase (PostgreSQL)"
     except Exception:
         pass
     try:
-        if "google_drive" in st.secrets:
-            fid = st.secrets["google_drive"].get("folder_id", "")
-            if fid:
+        sec = st.secrets
+        if "google_drive" in sec:
+            if sec["google_drive"].get("folder_id",""):
                 import archiwum_drive as _arch
                 return _arch, "Google Drive"
     except Exception:
         pass
     return None, None
-
-_archiwum_mod, _archiwum_nazwa = _wykryj_archiwum()
 
 
 # ---------------------------------------------------------------------------
@@ -53,7 +64,7 @@ def _generuj_word(rekordy: list, filtry_opis: str = "") -> bytes:
         doc.add_paragraph(f"Zakres: {filtry_opis}")
     doc.add_paragraph(f"Liczba dokumentow: {len(rekordy)}")
     doc.add_page_break()
-    for r in sorted(rekordy, key=lambda x: x.get("Data", ""), reverse=True):
+    for r in sorted(rekordy, key=lambda x: x.get("Data",""), reverse=True):
         doc.add_heading(f"Sygnatura: {r['Sygnatura']}", 1)
         doc.add_paragraph(f"Data:    {r['Data']}")
         doc.add_paragraph(f"Podatek: {r['Podatek']}")
@@ -70,13 +81,9 @@ def _generuj_word(rekordy: list, filtry_opis: str = "") -> bytes:
 # ---------------------------------------------------------------------------
 # PANEL ARCHIWUM
 # ---------------------------------------------------------------------------
-def _renderuj_panel_archiwum():
-    arch = _archiwum_mod
-    nazwa = _archiwum_nazwa
-
+def _renderuj_panel_archiwum(arch, nazwa):
     st.markdown("### Wspoldzielone Archiwum Interpretacji")
 
-    # Brak skonfigurowanego backendu
     if arch is None:
         st.warning(
             "Archiwum nie jest skonfigurowane. "
@@ -95,45 +102,23 @@ def _renderuj_panel_archiwum():
         try:
             stats = arch.statystyki_archiwum()
         except Exception as e:
-            st.error(f"Blad polaczenia z archiwum ({nazwa}): {e}")
+            st.error(f"Blad polaczenia z archiwum: {e}")
             st.markdown("---")
             return
 
     if not stats.get("polaczenie"):
-        st.error(
-            f"Brak polaczenia z {nazwa}. "
-            "Sprawdz konfiguracje w Streamlit Secrets -> Settings -> Secrets."
-        )
-        with st.expander("Jak sprawdzic connection string Supabase?"):
-            st.markdown("""
-1. Zaloguj sie na [supabase.com](https://supabase.com)
-2. Wybierz swoj projekt
-3. Kliknij **Settings** (ikona zębatki) → **Database**
-4. Znajdź sekcję **Connection string** → zakładka **URI**
-5. Skopiuj cały string — powinien wyglądać tak:
-```
-postgresql://postgres:[TWOJE_HASLO]@db.XXXXXXXX.supabase.co:5432/postgres
-```
-6. Wklej do Streamlit Secrets jako:
-```toml
-[supabase]
-url = "postgresql://postgres:[TWOJE_HASLO]@db.XXXXXXXX.supabase.co:5432/postgres"
-```
-            """)
+        st.error(f"Brak polaczenia z {nazwa}. Sprawdz konfiguracje w Streamlit Secrets.")
         st.markdown("---")
         return
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Dokumentow w archiwum", f"{stats['total']:,}".replace(",", " "))
     c2.metric("Ukonczonych kombinacji", stats["ukonczone_kombinacje"])
-    c3.metric("Ostatnie pobranie", stats["ostatnie_pobranie"])
-    c4.metric("Backend", nazwa)
+    c3.metric("Ostatnie pobranie",      stats["ostatnie_pobranie"])
+    c4.metric("Backend",                nazwa)
 
     if stats.get("per_podatek"):
-        pod_str = "  |  ".join(
-            f"**{k}:** {v}" for k, v in stats["per_podatek"].items()
-        )
-        st.caption(f"Podzial: {pod_str}")
+        st.caption("  |  ".join(f"**{k}:** {v}" for k, v in stats["per_podatek"].items()))
 
     with st.expander("Przegladaj i pobierz z archiwum"):
         col_f1, col_f2, col_f3 = st.columns(3)
@@ -148,18 +133,16 @@ url = "postgresql://postgres:[TWOJE_HASLO]@db.XXXXXXXX.supabase.co:5432/postgres
                 key="arch_mies")
 
         if st.button("Szukaj w archiwum", use_container_width=True):
-            with st.spinner("Szukam w archiwum..."):
-                wyniki_arch = []
+            with st.spinner("Szukam..."):
+                wyniki = []
                 for pod in (filtr_pod or [None]):
-                    wyniki_arch += arch.pobierz_rekordy_z_archiwum(
+                    wyniki += arch.pobierz_rekordy_z_archiwum(
                         podatek=pod, rok=filtr_rok, miesiac=filtr_mies)
-                seen = set()
-                unikalne = []
-                for r in wyniki_arch:
+                seen, unikalne = set(), []
+                for r in wyniki:
                     rid = arch._id_z_rekordu(r)
                     if rid not in seen:
-                        seen.add(rid)
-                        unikalne.append(r)
+                        seen.add(rid); unikalne.append(r)
             st.session_state["arch_podglad"] = unikalne
 
         podglad = st.session_state.get("arch_podglad", [])
@@ -168,44 +151,37 @@ url = "postgresql://postgres:[TWOJE_HASLO]@db.XXXXXXXX.supabase.co:5432/postgres
             for r in podglad[:20]:
                 st.markdown(f"- **{r['Sygnatura']}** | {r['Data']} | {r['Podatek']}")
             if len(podglad) > 20:
-                st.caption(f"... i {len(podglad)-20} wiecej (widoczne w pliku Word).")
+                st.caption(f"... i {len(podglad)-20} wiecej.")
             opis = ", ".join(filter(None, [
                 "/".join(filtr_pod) if filtr_pod else None,
                 str(filtr_rok) if filtr_rok else None,
                 utils.MIESIACE_PL[filtr_mies-1] if filtr_mies else None,
             ])) or "cale archiwum"
-            st.download_button(
-                "Pobierz jako Word", data=_generuj_word(podglad, opis),
+            st.download_button("Pobierz jako Word", data=_generuj_word(podglad, opis),
                 file_name=f"Archiwum_{opis.replace(', ','_')}_{datetime.now().strftime('%Y%m%d')}.docx",
                 mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                 use_container_width=True)
-
     st.markdown("---")
 
 
 # ---------------------------------------------------------------------------
-# EKSPORT Z ARCHIWUM DO WORD
+# EKSPORT DO WORD
 # ---------------------------------------------------------------------------
-def _pobierz_i_wyeksportuj(wybrane_lata, wybrane_miesiace_ui, wybrane_podatki):
-    arch = _archiwum_mod
-    wybrane_miesiace_num = [utils.MIESIACE_PL.index(m)+1 for m in (wybrane_miesiace_ui or [])]
-    rekordy = []
+def _pobierz_i_wyeksportuj(arch, wybrane_lata, wybrane_miesiace_ui, wybrane_podatki):
+    mies_num = [utils.MIESIACE_PL.index(m)+1 for m in (wybrane_miesiace_ui or [])]
+    rekordy  = []
     with st.spinner("Pobieram z archiwum..."):
         for pod in (wybrane_podatki or [None]):
             for rok in (wybrane_lata or [None]):
-                for mies in (wybrane_miesiace_num or [None]):
-                    rekordy += arch.pobierz_rekordy_z_archiwum(
-                        podatek=pod, rok=rok, miesiac=mies)
-    seen = set()
-    unikalne = []
+                for mies in (mies_num or [None]):
+                    rekordy += arch.pobierz_rekordy_z_archiwum(podatek=pod, rok=rok, miesiac=mies)
+    seen, unikalne = set(), []
     for r in rekordy:
         rid = arch._id_z_rekordu(r)
         if rid not in seen:
-            seen.add(rid)
-            unikalne.append(r)
+            seen.add(rid); unikalne.append(r)
     if not unikalne:
-        st.warning("Brak dokumentow w archiwum dla wybranych filtrow.")
-        return
+        st.warning("Brak dokumentow w archiwum dla wybranych filtrow."); return
     opis = ", ".join(filter(None, [
         "/".join(wybrane_podatki) if wybrane_podatki else None,
         "/".join(str(r) for r in wybrane_lata) if wybrane_lata else None,
@@ -225,6 +201,7 @@ def _pobierz_i_wyeksportuj(wybrane_lata, wybrane_miesiace_ui, wybrane_podatki):
 def run_module():
     st.title("Sciagacz Interpretacji v3")
 
+    # Blokada anty-ban
     if st.session_state.get("lockout_active_m2", False):
         uplynelo  = time.time() - st.session_state.get("lockout_start_m2", 0)
         pozostalo = max(0, int(CZAS_LOCKOUT_S - uplynelo))
@@ -239,7 +216,10 @@ def run_module():
                 st.rerun()
         st.stop()
 
-    _renderuj_panel_archiwum()
+    # Wykryj backend TUTAJ - po zaladowaniu Streamlit, z dostepem do st.secrets
+    arch, nazwa = _get_archiwum()
+
+    _renderuj_panel_archiwum(arch, nazwa)
 
     st.markdown("### Pobierz nowe interpretacje z MF")
     col1, col2, col3 = st.columns(3)
@@ -258,7 +238,6 @@ def run_module():
     if not (btn_start or btn_wznow or st.session_state.get("auto_resume_m2", False)):
         st.stop()
 
-    arch = _archiwum_mod
     konfig        = utils.wczytaj_historie(utils.PLIK_KONFIGURACJI_M2)
     uszkodzone_id = set(konfig.get("uszkodzone_id", []))
 
@@ -267,8 +246,7 @@ def run_module():
             id_w_archiwum        = arch.pobierz_id_z_archiwum()
             ukonczone_kombinacje = arch.pobierz_ukonczone_kombinacje()
     else:
-        id_w_archiwum        = set()
-        ukonczone_kombinacje = set()
+        id_w_archiwum, ukonczone_kombinacje = set(), set()
 
     wszystkie_znane = id_w_archiwum | uszkodzone_id
     bledy_api = 0
@@ -289,18 +267,15 @@ def run_module():
         ]
 
         if arch is not None:
-            do_api = [
-                k for k in wszystkie_kombinacje
-                if arch._klucz_kombinacji(k[2], k[0], k[1]) not in ukonczone_kombinacje
-            ]
-            z_arch_count = len(wszystkie_kombinacje) - len(do_api)
-            if z_arch_count:
-                st.success(f"{z_arch_count} kombinacji juz w archiwum — pominiete.")
+            do_api = [k for k in wszystkie_kombinacje
+                      if arch._klucz_kombinacji(k[2],k[0],k[1]) not in ukonczone_kombinacje]
+            z_arch = len(wszystkie_kombinacje) - len(do_api)
+            if z_arch:
+                st.success(f"{z_arch} kombinacji juz w archiwum — pominiete.")
         else:
             do_api = wszystkie_kombinacje
 
-        do_pobrania = []
-        znalezione_ogolem = 0
+        do_pobrania, znalezione_ogolem = [], 0
 
         if do_api:
             kontener_st = st.empty()
@@ -308,10 +283,7 @@ def run_module():
             with requests.Session() as sesja:
                 for i, (rok, mies, pod) in enumerate(do_api, 1):
                     _, ost = calendar.monthrange(rok, mies)
-                    kontener_st.info(
-                        f"[{i}/{len(do_api)}] Odpytuje MF: "
-                        f"{utils.MIESIACE_PL[mies-1]} {rok} ({pod})..."
-                    )
+                    kontener_st.info(f"[{i}/{len(do_api)}] Odpytuje MF: {utils.MIESIACE_PL[mies-1]} {rok} ({pod})...")
                     lista, status = utils.pobierz_wszystko_z_okresu(
                         f"{rok}-{mies:02d}-01", f"{rok}-{mies:02d}-{ost:02d}",
                         sesja, pod, utils.KODY_PODATKOW[pod])
@@ -326,40 +298,32 @@ def run_module():
         if bledy_api:
             st.error(f"Serwer MF odrzucil {bledy_api} zapytan. Odczekaj 15-30 min."); st.stop()
 
-        st.info(
-            f"Znaleziono **{znalezione_ogolem}** dokumentow w MF. "
-            f"W archiwum: **{len(id_w_archiwum)}**. "
-            f"Do pobrania: **{len(do_pobrania)}**."
-        )
+        st.info(f"Znaleziono **{znalezione_ogolem}** w MF. W archiwum: **{len(id_w_archiwum)}**. Do pobrania: **{len(do_pobrania)}**.")
 
     st.session_state["auto_resume_m2"] = False
 
     if not do_pobrania:
         st.success("Wszystko w archiwum! Generuje plik Word...")
         if arch is not None:
-            _pobierz_i_wyeksportuj(wybrane_lata, wybrane_miesiace_ui, wybrane_podatki)
+            _pobierz_i_wyeksportuj(arch, wybrane_lata, wybrane_miesiace_ui, wybrane_podatki)
         st.stop()
 
     workers_count = st.session_state.get("m2_workers", 5)
     st.markdown(f"### Pobieranie {len(do_pobrania)} dokumentow ({workers_count} watkow)")
-    pasek_gl  = st.progress(0)
-    k_licznik = st.empty()
-    k_log     = st.empty()
-    log_lines = []
-    stan      = {"ok": 0, "blad": 0}
+    pasek_gl = st.progress(0); k_licznik = st.empty(); k_log = st.empty()
+    log_lines = []; stan = {"ok": 0, "blad": 0}
 
     def on_postep(completed, total, sygnatura, status):
         with utils._lock:
-            if   status == "OK":                                stan["ok"]   += 1; ikona = "OK"
-            elif status in ("BRAK_PLIKU","BLAD_CZYTANIA"):     stan["blad"] += 1; ikona = "BRAK"
-            elif status == "BLOKADA":                           ikona = "BLOK"
-            elif status == "POMINIETY":                         ikona = "POMIN"
-            else:                                               ikona = "?"
+            if   status == "OK":                            stan["ok"]   += 1; ikona = "OK"
+            elif status in ("BRAK_PLIKU","BLAD_CZYTANIA"): stan["blad"] += 1; ikona = "BRAK"
+            elif status == "BLOKADA":                       ikona = "BLOK"
+            elif status == "POMINIETY":                     ikona = "POMIN"
+            else:                                           ikona = "?"
             log_lines.insert(0, f"{ikona} [{completed}/{total}] {sygnatura}")
             if len(log_lines) > 8: log_lines.pop()
         pasek_gl.progress(completed / total)
-        k_licznik.markdown(
-            f"Pobrano: **{stan['ok']}** | Bledy: **{stan['blad']}** | Lacznie: **{completed}/{total}**")
+        k_licznik.markdown(f"Pobrano: **{stan['ok']}** | Bledy: **{stan['blad']}** | Lacznie: **{completed}/{total}**")
         k_log.code("\n".join(log_lines), language=None)
 
     st.session_state["queue_m2"] = do_pobrania
@@ -369,7 +333,7 @@ def run_module():
             callback_postep=on_postep, workers=workers_count)
 
     if nowe_tresci and arch is not None:
-        with st.spinner(f"Zapisuje do archiwum ({_archiwum_nazwa})..."):
+        with st.spinner(f"Zapisuje do archiwum ({nazwa})..."):
             nowych = arch.zapisz_wiele_do_archiwum(nowe_tresci, "downloader_v3")
         st.info(f"Zapisano **{nowych}** nowych rekordow do archiwum.")
 
@@ -398,5 +362,5 @@ def run_module():
     pasek_gl.progress(1.0)
     st.success(f"Zakończono! Pobrano **{len(nowe_tresci)}** nowych dokumentow.")
     if arch is not None:
-        _pobierz_i_wyeksportuj(wybrane_lata, wybrane_miesiace_ui, wybrane_podatki)
+        _pobierz_i_wyeksportuj(arch, wybrane_lata, wybrane_miesiace_ui, wybrane_podatki)
     st.balloons()
