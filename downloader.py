@@ -98,13 +98,16 @@ def _renderuj_panel_archiwum(arch, nazwa):
         "Dokumenty pobrane przez kogokolwiek sa dostepne dla wszystkich uzytkownikow."
     )
 
-    with st.spinner(f"Laczenie z {nazwa}..."):
-        try:
-            stats = arch.statystyki_archiwum()
-        except Exception as e:
-            st.error(f"Blad polaczenia z archiwum: {e}")
-            st.markdown("---")
-            return
+    # Cache statystyk w session_state - nie odpytuj bazy przy kazdym rerunie
+    if "arch_stats_cache" not in st.session_state:
+        with st.spinner(f"Laczenie z {nazwa}..."):
+            try:
+                st.session_state["arch_stats_cache"] = arch.statystyki_archiwum()
+            except Exception as e:
+                st.error(f"Blad polaczenia z archiwum: {e}")
+                st.markdown("---")
+                return
+    stats = st.session_state["arch_stats_cache"]
 
     if not stats.get("polaczenie"):
         st.error(f"Brak polaczenia z {nazwa}. Sprawdz konfiguracje w Streamlit Secrets.")
@@ -336,6 +339,8 @@ def run_module():
         with st.spinner(f"Zapisuje do archiwum ({nazwa})..."):
             nowych = arch.zapisz_wiele_do_archiwum(nowe_tresci, "downloader_v3")
         st.info(f"Zapisano **{nowych}** nowych rekordow do archiwum.")
+        # Wyczysc cache statystyk - po zapisie licznik sie odswieza
+        st.session_state.pop("arch_stats_cache", None)
 
     if arch is not None and not blokada and wybrane_lata and wybrane_miesiace_ui and wybrane_podatki:
         mies_num2 = [utils.MIESIACE_PL.index(m)+1 for m in wybrane_miesiace_ui]
