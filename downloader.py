@@ -17,7 +17,7 @@ from docx import Document
 from datetime import datetime
 
 import utils
-import archiwum_drive as archiwum
+import archiwum_supabase as archiwum
 
 CZAS_LOCKOUT_S = 300
 
