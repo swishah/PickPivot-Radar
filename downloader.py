@@ -335,7 +335,7 @@ def run_module():
                     kontener_st.info(f"[{i}/{len(do_api)}] Odpytuje MF: {utils.MIESIACE_PL[mies-1]} {rok} ({pod})...")
                     lista, status = utils.pobierz_wszystko_z_okresu(
                         f"{rok}-{mies:02d}-01", f"{rok}-{mies:02d}-{ost:02d}",
-                        sesja, pod, utils.KODY_PODATKOW[pod])
+                        sesja, pod, utils.KODY_PRZEPISOW[pod])
                     if status in ("ERROR","TIMEOUT"): bledy_api += 1
                     znalezione_ogolem += len(lista)
                     for d in lista:

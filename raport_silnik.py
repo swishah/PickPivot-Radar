@@ -11,6 +11,7 @@ Nie zalezy od Streamlit ani od GitHub Actions - czysta logika biznesowa.
 
 import io
 import os
+import time
 import smtplib
 import requests
 from datetime import datetime
@@ -68,7 +69,7 @@ def uzupelnij_archiwum(
 ) -> tuple:
     """
     Sprawdza API MF dla okresu i pobiera brakujace dokumenty do archiwum.
-    Zwraca (liczba_nowych, status: "OK"|"BLOKADA"|"ERROR").
+    Zwraca (liczba_nowych, status: "OK"|"NIEPELNE_POBRANIE"|"BLOKADA"|"ERROR").
     """
     log_fn(f"[{podatek}] Sprawdzam API MF dla okresu {data_od.date()} — {data_do.date()}...")
 
@@ -78,7 +79,7 @@ def uzupelnij_archiwum(
         lista, status = utils.pobierz_wszystko_z_okresu(
             data_od.strftime("%Y-%m-%d"),
             data_do.strftime("%Y-%m-%d"),
-            sesja, podatek, utils.KODY_PODATKOW[podatek],
+            sesja, podatek, utils.KODY_PRZEPISOW[podatek],
         )
 
     if status != "OK":
@@ -110,6 +111,90 @@ def uzupelnij_archiwum(
 
 
 # ---------------------------------------------------------------------------
+# WERYFIKACJA KOMPLETNOSCI — drugie, niezalezne zapytanie do API MF
+# ---------------------------------------------------------------------------
+def weryfikuj_kompletnosc(
+    podatek: str,
+    data_od: datetime,
+    data_do: datetime,
+    liczba_w_archiwum: int,
+    log_fn=print,
+    max_prob: int = 3,
+) -> dict:
+    """
+    Odpytuje API MF JESZCZE RAZ (niezaleznie od pobierania) tylko po to,
+    zeby porownac ile dokumentow MF zglasza dla tego okresu z tym co mamy
+    w archiwum. To wykrywa sytuacje, w ktorych pierwsze zapytanie zwrocilo
+    niepelna liste (np. przez cichy blad MF bez kodu bledu HTTP).
+
+    Zwraca dict:
+        {
+            "zgodnosc": bool,           # True jesli liczby sie zgadzaja
+            "liczba_w_mf": int | None,  # None jesli weryfikacja sie nie powiodla
+            "liczba_w_archiwum": int,
+            "roznica": int,
+            "status": "OK" | "NIEZGODNOSC" | "WERYFIKACJA_NIEUDANA"
+        }
+    """
+    log_fn(f"[{podatek}] Weryfikacja kompletnosci — drugie zapytanie do API MF...")
+
+    for proba in range(1, max_prob + 1):
+        try:
+            with requests.Session() as sesja:
+                lista, status = utils.pobierz_wszystko_z_okresu(
+                    data_od.strftime("%Y-%m-%d"),
+                    data_do.strftime("%Y-%m-%d"),
+                    sesja, podatek, utils.KODY_PRZEPISOW[podatek],
+                )
+
+            # "OK" i "NIEPELNE_POBRANIE" oba dostarczaja faktyczna liste -
+            # NIEPELNE_POBRANIE oznacza ze paginacja nie zebrala wszystkiego
+            # co API zadeklarowalo w totalHits, wiec liczba_w_mf moze byc
+            # zanizona. Traktujemy to jako sygnal do ponowienia, nie jako
+            # wiarygodny wynik.
+            if status == "OK":
+                liczba_w_mf = len(lista)
+                roznica = liczba_w_mf - liczba_w_archiwum
+
+                if roznica == 0:
+                    log_fn(f"[{podatek}] Weryfikacja OK — MF: {liczba_w_mf}, archiwum: {liczba_w_archiwum}.")
+                    return {
+                        "zgodnosc": True, "liczba_w_mf": liczba_w_mf,
+                        "liczba_w_archiwum": liczba_w_archiwum, "roznica": 0, "status": "OK",
+                    }
+                else:
+                    log_fn(
+                        f"[{podatek}] NIEZGODNOSC — MF zglasza {liczba_w_mf}, "
+                        f"w archiwum {liczba_w_archiwum} (roznica: {roznica})."
+                    )
+                    return {
+                        "zgodnosc": False, "liczba_w_mf": liczba_w_mf,
+                        "liczba_w_archiwum": liczba_w_archiwum, "roznica": roznica,
+                        "status": "NIEZGODNOSC",
+                    }
+
+            if status == "NIEPELNE_POBRANIE":
+                log_fn(
+                    f"[{podatek}] Proba weryfikacji {proba}/{max_prob} — paginacja API "
+                    f"nie zebrala wszystkich zadeklarowanych wynikow, ponawiam..."
+                )
+            else:
+                log_fn(f"[{podatek}] Proba weryfikacji {proba}/{max_prob} — status {status}, ponawiam...")
+            time.sleep(8 * proba)
+
+        except Exception as e:
+            log_fn(f"[{podatek}] Blad podczas weryfikacji (proba {proba}): {e}")
+            time.sleep(8 * proba)
+
+    log_fn(f"[{podatek}] Weryfikacja nieudana po {max_prob} probach — MF niedostepne.")
+    return {
+        "zgodnosc": None, "liczba_w_mf": None,
+        "liczba_w_archiwum": liczba_w_archiwum, "roznica": None,
+        "status": "WERYFIKACJA_NIEUDANA",
+    }
+
+
+# ---------------------------------------------------------------------------
 # GENEROWANIE RAPORTU DLA JEDNEGO PODATKU + ZAKRESU DAT (rdzen logiki)
 # ---------------------------------------------------------------------------
 def generuj_raport_dla_podatku(
@@ -119,14 +204,17 @@ def generuj_raport_dla_podatku(
     data_do: datetime,
     opis_okresu: str,
     log_fn=print,
+    weryfikuj: bool = True,
 ) -> dict:
     """
-    Pelny przebieg dla JEDNEGO podatku: uzupelnia archiwum, generuje Word, zwraca wynik.
+    Pelny przebieg dla JEDNEGO podatku: uzupelnia archiwum, weryfikuje
+    kompletnosc (drugie zapytanie do MF), generuje Word, zwraca wynik.
 
     Zwraca dict:
         {
             "podatek": str, "liczba_dok": int, "plik_bytes": bytes|None,
-            "nowych_pobranych": int, "status": "OK"|"BLOKADA"|"ERROR"|"BRAK_DOKUMENTOW"
+            "nowych_pobranych": int, "status": "OK"|"BLOKADA"|"ERROR"|"BRAK_DOKUMENTOW",
+            "weryfikacja": dict | None  # wynik weryfikuj_kompletnosc()
         }
     """
     try:
@@ -142,13 +230,47 @@ def generuj_raport_dla_podatku(
             return {
                 "podatek": podatek, "liczba_dok": 0, "plik_bytes": None,
                 "nowych_pobranych": nowych, "status": "BRAK_DOKUMENTOW",
+                "weryfikacja": None,
             }
+
+        # ── PODWOJNA WERYFIKACJA — niezalezne drugie zapytanie do MF ──────
+        wynik_weryfikacji = None
+        if weryfikuj:
+            wynik_weryfikacji = weryfikuj_kompletnosc(
+                podatek, data_od, data_do, len(rekordy), log_fn=log_fn
+            )
+
+            # Jesli wykryto niezgodnosc - sprobuj DOCIAGNAC brakujace dokumenty
+            # zanim wygenerujemy finalny plik (samoleczace zachowanie)
+            if wynik_weryfikacji["status"] == "NIEZGODNOSC" and wynik_weryfikacji["roznica"] > 0:
+                log_fn(f"[{podatek}] Wykryto brakujace dokumenty — proba douzupelnienia archiwum...")
+                nowych_dodatkowo, _ = uzupelnij_archiwum(db, podatek, data_od, data_do, log_fn=log_fn)
+                nowych += nowych_dodatkowo
+
+                if nowych_dodatkowo > 0:
+                    rekordy = db_core.pobierz_rekordy_z_archiwum(
+                        db, podatek=podatek,
+                        data_od=data_od.strftime("%Y-%m-%d"),
+                        data_do=data_do.strftime("%Y-%m-%d"),
+                    )
+                    # Ponowna weryfikacja po douzupelnieniu
+                    wynik_weryfikacji = weryfikuj_kompletnosc(
+                        podatek, data_od, data_do, len(rekordy), log_fn=log_fn, max_prob=2
+                    )
 
         plik_bytes = generuj_word(rekordy, podatek, opis_okresu, tytul_raportu="Raport na zadanie")
 
+        # Status koncowy uwzglednia wynik weryfikacji
+        status_finalny = status_pobierania
+        if wynik_weryfikacji and wynik_weryfikacji["status"] == "NIEZGODNOSC":
+            status_finalny = "NIEZGODNOSC"
+        elif wynik_weryfikacji and wynik_weryfikacji["status"] == "WERYFIKACJA_NIEUDANA":
+            status_finalny = "WERYFIKACJA_NIEUDANA"
+
         return {
             "podatek": podatek, "liczba_dok": len(rekordy), "plik_bytes": plik_bytes,
-            "nowych_pobranych": nowych, "status": status_pobierania,
+            "nowych_pobranych": nowych, "status": status_finalny,
+            "weryfikacja": wynik_weryfikacji,
         }
 
     except Exception as e:
@@ -156,6 +278,7 @@ def generuj_raport_dla_podatku(
         return {
             "podatek": podatek, "liczba_dok": 0, "plik_bytes": None,
             "nowych_pobranych": 0, "status": "ERROR", "error_msg": str(e),
+            "weryfikacja": None,
         }
 
 
@@ -172,11 +295,20 @@ def wyslij_email_z_zalacznikiem(
     gmail_haslo: str,
     odbiorca: str,
     log_fn=print,
+    weryfikacja: dict = None,
 ) -> bool:
     """Wysyla e-mail z plikiem Word jako zalacznik. Zwraca True przy sukcesie."""
     from email.mime.application import MIMEApplication
 
-    temat = f"PickPivot — Raport na zadanie: {podatek} ({opis_okresu})"
+    badge_weryfikacji = _html_badge_weryfikacji(weryfikacja)
+    temat_status = ""
+    if weryfikacja:
+        if weryfikacja["status"] == "NIEZGODNOSC":
+            temat_status = " [⚠️ WYMAGA SPRAWDZENIA]"
+        elif weryfikacja["status"] == "WERYFIKACJA_NIEUDANA":
+            temat_status = " [ℹ️ niepotwierdzone]"
+
+    temat = f"PickPivot — Raport na zadanie: {podatek} ({opis_okresu}){temat_status}"
 
     tresc_html = f"""
     <html><body style="font-family: Arial, sans-serif;">
@@ -184,6 +316,7 @@ def wyslij_email_z_zalacznikiem(
     <p><b>Podatek:</b> {podatek}</p>
     <p><b>Okres:</b> {opis_okresu}</p>
     <p><b>Liczba dokumentów:</b> {liczba_dok}</p>
+    {badge_weryfikacji}
     <p style="margin-top: 20px;">Plik Word w załączniku.</p>
     <p style="color: #888; font-size: 12px;">
         Wiadomość wygenerowana na żądanie użytkownika PickPivot.
@@ -216,6 +349,39 @@ def wyslij_email_z_zalacznikiem(
         return False
 
 
+def _html_badge_weryfikacji(weryfikacja: dict) -> str:
+    """Generuje kolorowy badge HTML pokazujacy status weryfikacji kompletnosci."""
+    if not weryfikacja:
+        return ""
+
+    status = weryfikacja["status"]
+
+    if status == "OK":
+        return (
+            '<p style="background:#D5F5E3; padding:10px; border-radius:6px; border-left:4px solid #27AE60;">'
+            '✅ <b>Potwierdzona kompletność</b> — niezależna druga weryfikacja w API MF '
+            f'zgadza się z liczbą dokumentów w raporcie ({weryfikacja["liczba_w_mf"]}).</p>'
+        )
+    elif status == "NIEZGODNOSC":
+        znak = "+" if weryfikacja["roznica"] > 0 else ""
+        return (
+            '<p style="background:#FADBD8; padding:10px; border-radius:6px; border-left:4px solid #E74C3C;">'
+            '⚠️ <b>Wymaga sprawdzenia</b> — druga weryfikacja w API MF wykryła rozbieżność: '
+            f'MF zgłasza {weryfikacja["liczba_w_mf"]} dokumentów, w raporcie jest '
+            f'{weryfikacja["liczba_w_archiwum"]} (różnica: {znak}{weryfikacja["roznica"]}). '
+            'System próbował automatycznie douzupełnić archiwum — sprawdź czy liczby się zgadzają, '
+            'a w razie wątpliwości uruchom raport ponownie.</p>'
+        )
+    elif status == "WERYFIKACJA_NIEUDANA":
+        return (
+            '<p style="background:#FEF9E7; padding:10px; border-radius:6px; border-left:4px solid #F39C12;">'
+            'ℹ️ <b>Kompletność niepotwierdzona</b> — serwer Ministerstwa Finansów był niedostępny '
+            'podczas próby weryfikacji. Raport zawiera wszystko co udało się pobrać przy pierwszym '
+            'zapytaniu, ale zalecamy ponowne uruchomienie raportu za jakiś czas dla pewności.</p>'
+        )
+    return ""
+
+
 def wyslij_email_podsumowanie_wielu(
     wyniki: list,
     opis_okresu: str,
@@ -232,12 +398,38 @@ def wyslij_email_podsumowanie_wielu(
     from email.mime.application import MIMEApplication
 
     podatki_str = "/".join(w["podatek"] for w in wyniki)
-    temat = f"PickPivot — Raport na zadanie: {podatki_str} ({opis_okresu})"
+    ma_niezgodnosc = any(
+        w.get("weryfikacja") and w["weryfikacja"]["status"] in ("NIEZGODNOSC", "WERYFIKACJA_NIEUDANA")
+        for w in wyniki
+    )
+    temat_status = " [⚠️ SPRAWDZ SZCZEGOLY]" if ma_niezgodnosc else ""
+    temat = f"PickPivot — Raport na zadanie: {podatki_str} ({opis_okresu}){temat_status}"
+
+    def _status_kom(w):
+        wer = w.get("weryfikacja")
+        if not wer:
+            return "—"
+        if wer["status"] == "OK":
+            return "✅ Potwierdzone"
+        if wer["status"] == "NIEZGODNOSC":
+            znak = "+" if wer["roznica"] > 0 else ""
+            return f"⚠️ Różnica {znak}{wer['roznica']}"
+        if wer["status"] == "WERYFIKACJA_NIEUDANA":
+            return "ℹ️ Niepotwierdzone"
+        return "—"
 
     wiersze = "".join(
         f'<tr><td>{w["podatek"]}</td><td>{w["liczba_dok"]}</td>'
-        f'<td>{"✅ Zalaczony" if w["plik_bytes"] else "— brak dokumentow"}</td></tr>'
+        f'<td>{"✅ Zalaczony" if w["plik_bytes"] else "— brak dokumentow"}</td>'
+        f'<td>{_status_kom(w)}</td></tr>'
         for w in wyniki
+    )
+
+    info_dolna = (
+        '<p style="background:#FADBD8; padding:10px; border-radius:6px; border-left:4px solid #E74C3C; margin-top:15px;">'
+        '⚠️ Co najmniej jeden podatek ma niepotwierdzoną kompletność lub wykrytą rozbieżność — '
+        'sprawdź kolumnę "Weryfikacja" w tabeli powyżej.</p>'
+        if ma_niezgodnosc else ""
     )
 
     tresc_html = f"""
@@ -246,10 +438,11 @@ def wyslij_email_podsumowanie_wielu(
     <p><b>Okres:</b> {opis_okresu}</p>
     <table border="1" cellpadding="8" cellspacing="0" style="border-collapse: collapse;">
         <tr style="background-color: #2C3E50; color: white;">
-            <th>Podatek</th><th>Liczba dokumentów</th><th>Plik</th>
+            <th>Podatek</th><th>Liczba dokumentów</th><th>Plik</th><th>Weryfikacja</th>
         </tr>
         {wiersze}
     </table>
+    {info_dolna}
     <p style="margin-top: 20px;">Pliki Word w załączniku (jeśli były dokumenty).</p>
     <p style="color: #888; font-size: 12px;">
         Wiadomość wygenerowana na żądanie użytkownika PickPivot.

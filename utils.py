@@ -23,7 +23,7 @@ PLIK_REKORDOW_M2     = f"{FOLDER_DOCELOWY}/baza_tresci_m2.json"
 
 SEARCH_API_URL_BASE = (
     "https://eureka.mf.gov.pl/api/public/v1/wyszukiwarka/informacje/"
-    "?size=100&page={page}&sort=parametryPozycjonowania%2Casc"
+    "?size=25&page={page}&sort=parametryPozycjonowania%2Casc"
 )
 PDF_API_URL   = "https://eureka.mf.gov.pl/api/public/v1/informacje/{id}/eksport/pdf"
 # ► NOWE: endpoint HTML (lżejszy niż PDF, bez renderowania)
@@ -36,7 +36,25 @@ FRAZY_KLUCZOWE = [
     "stacja uzdatniania", "spółka komunalna"
 ]
 
+# UWAGA: ten slownik byl wczesniej (blednie) uzywany jako filtr API przez
+# sprawdzanie podciagu w polu SYG. NIE jest to prawdziwy mechanizm filtrowania
+# uzywany przez API MF - prawdziwy filtr to KODY_PRZEPISOW ponizej. Ten slownik
+# zostaje tylko jako pomocniczy (np. do wyswietlania prefiksu w UI), ale nigdy
+# nie powinien byc przekazywany do pobierz_wszystko_z_okresu / szukaj_w_api_mf.
 KODY_PODATKOW = {"PIT": ".4011.", "CIT": ".4010.", "VAT": ".4012.", "AKCYZA": ".4013."}
+
+# ► KLUCZOWE: prawdziwy filtr uzywany przez strone eureka.mf.gov.pl do
+# zawezania wynikow do konkretnego podatku. To NIE jest filtrowanie po
+# sygnaturze (jak bylo wczesniej) tylko po wewnetrznym ID aktu prawnego
+# w slowniku MF. Wartosci znalezione przez podsluchanie zapytan sieciowych
+# prawdziwej wyszukiwarki (DevTools -> Network -> Payload -> filter.PRZEPISY).
+KODY_PRZEPISOW = {
+    "PIT":    29903,
+    "VAT":    29955,
+    "CIT":    29985,
+    "AKCYZA": 38830,
+}
+
 MIESIACE_PL   = [
     "Styczeń", "Luty", "Marzec", "Kwiecień", "Maj", "Czerwiec",
     "Lipiec", "Sierpień", "Wrzesień", "Październik", "Listopad", "Grudzień"
@@ -258,7 +276,13 @@ _UA_LIST = [
 _ua_idx = 0
 
 def _wykonaj_zapytanie_api(sesja, url, payload, timeout=15):
-    """Wspólna logika zapytania POST do Eureka API z retry i rotacja UA."""
+    """
+    Wspólna logika zapytania POST do Eureka API z retry i rotacja UA.
+    Zwraca (wyniki: list, status: str, total_hits: int|None).
+    total_hits pochodzi z pola "totalHits" w odpowiedzi API - pozwala
+    precyzyjnie wiedziec ile lacznie dokumentow jest dla danego zapytania,
+    zamiast zgadywac po dlugosci strony.
+    """
     global _ua_idx
     MAKS_PROB = 3
 
@@ -289,7 +313,14 @@ def _wykonaj_zapytanie_api(sesja, url, payload, timeout=15):
                                 and ("id" in v[0] or "ID_INFORMACJI" in v[0])):
                             wyniki = v
                             break
-                return wyniki, "OK"
+
+                total_hits = (
+                    dane.get("totalHits")
+                    or dane.get("totalElements")
+                    or dane.get("total")
+                )
+
+                return wyniki, "OK", total_hits
 
             elif r.status_code == 429:
                 # Rate limit - czekaj coraz dluzej
@@ -303,7 +334,7 @@ def _wykonaj_zapytanie_api(sesja, url, payload, timeout=15):
                 continue
 
             else:
-                return [], f"ERROR_{r.status_code}"
+                return [], f"ERROR_{r.status_code}", None
 
         except requests.exceptions.Timeout:
             time.sleep(5)
@@ -312,12 +343,16 @@ def _wykonaj_zapytanie_api(sesja, url, payload, timeout=15):
             time.sleep(3)
             continue
 
-    return [], "ERROR"
+    return [], "ERROR", None
 
-def _mapuj_dokument(d, nazwa_podatku, kod_sygnatury):
+def _mapuj_dokument(d, nazwa_podatku):
+    """
+    Mapuje surowy rekord z API na nasz format.
+    UWAGA: filtrowanie po podatku NIE odbywa sie juz tutaj (po sygnaturze) -
+    odbywa sie po stronie API przez filtr PRZEPISY w samym zapytaniu.
+    Ta funkcja tylko przeksztalca format, nie odrzuca dokumentow.
+    """
     sygnatura = str(d.get('SYG', '')).upper()
-    if kod_sygnatury not in sygnatura:
-        return None
     doc_id = str(d.get('id') or d.get('ID_INFORMACJI') or '')
     if not doc_id:
         return None
@@ -328,64 +363,108 @@ def _mapuj_dokument(d, nazwa_podatku, kod_sygnatury):
         "data":      str(d.get('DT_WYD', '')).split('T')[0]
     }
 
-def pobierz_wszystko_z_okresu(data_start_str, data_koniec_str, sesja, nazwa_podatku, kod_sygnatury):
-    dokumenty = []
-    page      = 0
+def pobierz_wszystko_z_okresu(data_start_str, data_koniec_str, sesja, nazwa_podatku, kod_przepisu):
+    """
+    kod_przepisu: numeryczny ID aktu prawnego z KODY_PRZEPISOW (np. 29903 dla PIT).
+    To jest PRAWDZIWY filtr uzywany przez API - identyczny z tym, czego
+    uzywa strona eureka.mf.gov.pl przy wyszukiwaniu.
+    """
+    dokumenty  = []
+    page       = 0
+    total_hits = None
+
     while True:
         url     = SEARCH_API_URL_BASE.format(page=page)
         payload = {
             "query": "",
             "filter": {
                 "KATEGORIA_INFORMACJI": [1],
+                "PRZEPISY":     [kod_przepisu],
                 "DT_WYD_start": data_start_str,
                 "DT_WYD_end":   data_koniec_str
             },
-            "columns": ["SYG", "ID_INFORMACJI", "DT_WYD"],
-            "searchInFullPhrase": False,
+            "columns": ["SYG", "ID_INFORMACJI", "DT_WYD", "KATEGORIA_INFORMACJI"],
+            "searchInFullPhrase": True,
             "searchInContent":    False,
             "searchInSynonyms":   False,
             "warunkiDodatkowe":   []
         }
-        wyniki, status = _wykonaj_zapytanie_api(sesja, url, payload, timeout=15)
+        wyniki, status, total_hits_strona = _wykonaj_zapytanie_api(sesja, url, payload, timeout=15)
         if status == "ERROR":
             return dokumenty, "ERROR"
+
+        if total_hits is None and total_hits_strona is not None:
+            total_hits = total_hits_strona
+
         for d in wyniki:
-            dok = _mapuj_dokument(d, nazwa_podatku, kod_sygnatury)
+            dok = _mapuj_dokument(d, nazwa_podatku)
             if dok:
                 dokumenty.append(dok)
-        if len(wyniki) < 100:
-            break
+
+        # Precyzyjny warunek konca paginacji: znamy totalHits z odpowiedzi API
+        if total_hits is not None:
+            if len(dokumenty) >= total_hits or not wyniki:
+                break
+        else:
+            # Fallback gdyby API nie zwrocilo totalHits w tej odpowiedzi
+            if len(wyniki) < 25:
+                break
+
         page += 1
         time.sleep(0.2)
+
+    if total_hits is not None and len(dokumenty) != total_hits:
+        # Niezgodnosc miedzy zadeklarowanym total a faktycznie pobranymi -
+        # nie ukrywamy tego cicho, zwracamy specjalny status zeby wywolujacy
+        # mogl to zalogowac/ostrzec
+        return dokumenty, "NIEPELNE_POBRANIE"
+
     return dokumenty, "OK"
 
-def szukaj_w_api_mf(data_start_str, data_koniec_str, fraza, sesja, nazwa_podatku, kod_sygnatury):
-    dokumenty = []
-    page      = 0
+def szukaj_w_api_mf(data_start_str, data_koniec_str, fraza, sesja, nazwa_podatku, kod_przepisu):
+    """
+    kod_przepisu: numeryczny ID aktu prawnego z KODY_PRZEPISOW (np. 29903 dla PIT).
+    """
+    dokumenty  = []
+    page       = 0
+    total_hits = None
+
     while True:
         url     = SEARCH_API_URL_BASE.format(page=page)
         payload = {
             "query": fraza,
             "filter": {
                 "KATEGORIA_INFORMACJI": [1],
+                "PRZEPISY":     [kod_przepisu],
                 "DT_WYD_start": data_start_str,
                 "DT_WYD_end":   data_koniec_str
             },
-            "columns": ["SYG", "ID_INFORMACJI", "DT_WYD"],
+            "columns": ["SYG", "ID_INFORMACJI", "DT_WYD", "KATEGORIA_INFORMACJI"],
             "searchInFullPhrase": False,
             "searchInContent":    True,
             "searchInSynonyms":   True,
             "warunkiDodatkowe":   []
         }
-        wyniki, status = _wykonaj_zapytanie_api(sesja, url, payload, timeout=12)
+        wyniki, status, total_hits_strona = _wykonaj_zapytanie_api(sesja, url, payload, timeout=12)
         if status == "ERROR":
             return dokumenty, "ERROR"
+
+        if total_hits is None and total_hits_strona is not None:
+            total_hits = total_hits_strona
+
         for d in wyniki:
-            dok = _mapuj_dokument(d, nazwa_podatku, kod_sygnatury)
+            dok = _mapuj_dokument(d, nazwa_podatku)
             if dok:
                 dokumenty.append(dok)
-        if len(wyniki) < 100:
-            break
+
+        if total_hits is not None:
+            if len(dokumenty) >= total_hits or not wyniki:
+                break
+        else:
+            if len(wyniki) < 25:
+                break
+
         page += 1
         time.sleep(0.2)
+
     return dokumenty, "OK"

@@ -62,7 +62,7 @@ def run_module():
                                 zapytania += 1; continue
                             
                             status_tekst.info(f"Odpytuje: {fraza} ({podatek}) dla {miesiac:02d}/{rok}...")
-                            lista_trafien, _ = utils.szukaj_w_api_mf(ds, dk, fraza, sesja, podatek, utils.KODY_PODATKOW[podatek])
+                            lista_trafien, _ = utils.szukaj_w_api_mf(ds, dk, fraza, sesja, podatek, utils.KODY_PRZEPISOW[podatek])
                             
                             if lista_trafien:
                                 cache = utils.wczytaj_pelne_tresci(utils.PLIK_REKORDOW_M1)
