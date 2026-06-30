@@ -1,52 +1,56 @@
-name: Cotygodniowy Raport Interpretacji
+name: Raport na zadanie
 
 on:
-  schedule:
-    # UWAGA: GitHub Actions cron dziala w UTC, Polska to UTC+1 (zima) / UTC+2 (lato)
-    # Cel: probowac w oknie sobota 15:00 -> poniedzialek 02:00 czasu polskiego (35h)
-    #
-    # 20 prob rozlozonych co ~1h45min w calym oknie. Skrypt jest IDEMPOTENTNY -
-    # kazda proba sprawdza co juz jest w archiwum i dociaga TYLKO brakujace
-    # dokumenty, wiec wielokrotne uruchomienia nie tworza duplikatow ani nie
-    # generuja zbednego obciazenia - tylko zwiekszaja szanse zlapania okna,
-    # w ktorym API Ministerstwa Finansow akurat odpowiada bez blokad.
-    #
-    # Godziny ponizej podane w UTC (czas zimowy, UTC+1). W czasie letnim
-    # (UTC+2) wszystko przesunie sie o 1h wczesniej wzgledem zegara polskiego -
-    # nie wymaga zadnej akcji, GitHub zawsze trzyma sie UTC.
-    - cron: '0 14 * * 6'   # sob 15:00 PL
-    - cron: '50 15 * * 6'  # sob 16:50 PL
-    - cron: '40 17 * * 6'  # sob 18:40 PL
-    - cron: '30 19 * * 6'  # sob 20:30 PL
-    - cron: '20 21 * * 6'  # sob 22:20 PL
-    - cron: '10 23 * * 6'  # niedz 00:10 PL
-    - cron: '0 1 * * 0'    # niedz 02:00 PL
-    - cron: '50 2 * * 0'   # niedz 03:50 PL
-    - cron: '40 4 * * 0'   # niedz 05:40 PL
-    - cron: '30 6 * * 0'   # niedz 07:30 PL
-    - cron: '20 8 * * 0'   # niedz 09:20 PL
-    - cron: '10 10 * * 0'  # niedz 11:10 PL
-    - cron: '0 12 * * 0'   # niedz 13:00 PL
-    - cron: '50 13 * * 0'  # niedz 14:50 PL
-    - cron: '40 15 * * 0'  # niedz 16:40 PL
-    - cron: '30 17 * * 0'  # niedz 18:30 PL
-    - cron: '20 19 * * 0'  # niedz 20:20 PL
-    - cron: '10 21 * * 0'  # niedz 22:10 PL
-    - cron: '0 23 * * 0'   # pon 00:00 PL
-    - cron: '0 1 * * 1'    # pon 02:00 PL (ostatnia proba przed koncem okna)
-
-  # Mozliwosc recznego uruchomienia z zakladki Actions (do testow)
   workflow_dispatch:
     inputs:
-      test_tydzien:
-        description: 'Opcjonalnie: data YYYY-MM-DD z tygodnia do przetworzenia (test)'
-        required: false
-        default: ''
+      rok:
+        description: 'Rok (np. 2026)'
+        required: true
+        type: choice
+        options:
+          - '2024'
+          - '2025'
+          - '2026'
+        default: '2026'
+      miesiac:
+        description: 'Miesiac'
+        required: true
+        type: choice
+        options:
+          - '1'
+          - '2'
+          - '3'
+          - '4'
+          - '5'
+          - '6'
+          - '7'
+          - '8'
+          - '9'
+          - '10'
+          - '11'
+          - '12'
+        default: '1'
+      podatek:
+        description: 'Podatek'
+        required: true
+        type: choice
+        options:
+          - 'PIT'
+          - 'CIT'
+          - 'VAT'
+          - 'AKCYZA'
+          - 'WSZYSTKIE'
+        default: 'VAT'
+
+  # Umozliwia uruchomienie przez GitHub API z poziomu aplikacji Streamlit
+  # (przycisk "Generuj w tle" wysyla request do tego samego eventu)
+  repository_dispatch:
+    types: [raport-na-zadanie]
 
 jobs:
-  generuj-raport:
+  generuj-raport-na-zadanie:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 30
 
     steps:
       - name: Pobierz kod repozytorium
@@ -62,7 +66,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests PyPDF2 python-docx beautifulsoup4 lxml psycopg2-binary
 
-      - name: Uruchom skrypt raportu tygodniowego
+      - name: Uruchom generowanie raportu (workflow_dispatch)
+        if: github.event_name == 'workflow_dispatch'
         env:
           SUPABASE_HOST:          ${{ secrets.SUPABASE_HOST }}
           SUPABASE_PORT:          ${{ secrets.SUPABASE_PORT }}
@@ -73,12 +78,28 @@ jobs:
           GMAIL_HASLO_APLIKACJI:  ${{ secrets.GMAIL_HASLO_APLIKACJI }}
           EMAIL_ODBIORCA:         ${{ secrets.EMAIL_ODBIORCA }}
         run: |
-          if [ -n "${{ github.event.inputs.test_tydzien }}" ]; then
-            python raport_tygodniowy.py --test-tydzien "${{ github.event.inputs.test_tydzien }}"
-          else
-            python raport_tygodniowy.py
-          fi
+          python raport_na_zadanie.py \
+            --rok "${{ github.event.inputs.rok }}" \
+            --miesiac "${{ github.event.inputs.miesiac }}" \
+            --podatek "${{ github.event.inputs.podatek }}"
 
-      - name: Podsumowanie w logu
+      - name: Uruchom generowanie raportu (repository_dispatch z aplikacji)
+        if: github.event_name == 'repository_dispatch'
+        env:
+          SUPABASE_HOST:          ${{ secrets.SUPABASE_HOST }}
+          SUPABASE_PORT:          ${{ secrets.SUPABASE_PORT }}
+          SUPABASE_DB:            ${{ secrets.SUPABASE_DB }}
+          SUPABASE_USER:          ${{ secrets.SUPABASE_USER }}
+          SUPABASE_PASSWORD:      ${{ secrets.SUPABASE_PASSWORD }}
+          GMAIL_ADRES:            ${{ secrets.GMAIL_ADRES }}
+          GMAIL_HASLO_APLIKACJI:  ${{ secrets.GMAIL_HASLO_APLIKACJI }}
+          EMAIL_ODBIORCA:         ${{ secrets.EMAIL_ODBIORCA }}
+        run: |
+          python raport_na_zadanie.py \
+            --rok "${{ github.event.client_payload.rok }}" \
+            --miesiac "${{ github.event.client_payload.miesiac }}" \
+            --podatek "${{ github.event.client_payload.podatek }}"
+
+      - name: Podsumowanie
         if: always()
-        run: echo "Zadanie zakonczone. Sprawdz logi powyzej dla szczegolow."
+        run: echo "Zadanie zakonczone. Sprawdz logi powyzej."
