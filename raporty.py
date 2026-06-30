@@ -109,12 +109,32 @@ def _wyslij_github_dispatch(rok: int, miesiac: int, podatek: str) -> tuple:
     Zwraca (sukces: bool, komunikat: str).
     """
     try:
-        token = st.secrets["github"]["token"]
-        repo  = st.secrets["github"]["repo"]  # format: "uzytkownik/nazwa-repo"
+        token = str(st.secrets["github"]["token"]).strip()
+        repo  = str(st.secrets["github"]["repo"]).strip()
     except Exception:
         return False, (
             "Brak konfiguracji GitHub w Secrets. Dodaj sekcje:\n"
             "[github]\ntoken = \"ghp_...\"\nrepo = \"uzytkownik/nazwa-repo\""
+        )
+
+    # Walidacja formatu repo - czesty blad to wklejenie pelnego URL
+    if repo.startswith("http") or "github.com" in repo:
+        return False, (
+            f"Pole 'repo' zawiera URL zamiast formatu 'login/nazwa-repo'. "
+            f"Masz: \"{repo}\" — popraw na sam login i nazwe repozytorium, np. \"jankowalski/pickpivot\"."
+        )
+    if "/" not in repo:
+        return False, (
+            f"Pole 'repo' powinno miec format \"login/nazwa-repo\" (ze ukosnikiem). "
+            f"Masz: \"{repo}\""
+        )
+
+    # Walidacja formatu tokena
+    if not (token.startswith("github_pat_") or token.startswith("ghp_")):
+        return False, (
+            f"Token nie wyglada jak prawidlowy GitHub token (powinien zaczynac sie "
+            f"od 'github_pat_' lub 'ghp_'). Sprawdz czy nie wkleiles przypadkiem "
+            f"czegos innego. Pierwsze znaki Twojego tokena: \"{token[:15]}...\""
         )
 
     url = f"https://api.github.com/repos/{repo}/dispatches"
@@ -136,8 +156,30 @@ def _wyslij_github_dispatch(rok: int, miesiac: int, podatek: str) -> tuple:
         r = http_requests.post(url, headers=headers, json=payload, timeout=15)
         if r.status_code == 204:
             return True, "Zadanie wyslane do GitHub Actions. Wynik przyjdzie mailem za kilka minut."
+        elif r.status_code == 401:
+            return False, (
+                "GitHub odrzucil token (401 Bad credentials). Najczesciej oznacza to:\n"
+                "1. Token zostal skopiowany z dodatkowa spacja/nowa linia (sprobuj wpisac na nowo, "
+                "bez kopiowania calej linii z Secrets)\n"
+                "2. Token wygasl lub zostal odwolany - sprawdz status 'Active' na "
+                "github.com/settings/tokens?type=beta\n"
+                "3. Token zostal wygenerowany ale GitHub jeszcze go nie aktywowal (rzadkie, "
+                "poczekaj 1-2 minuty po wygenerowaniu)\n\n"
+                f"Pierwsze 15 znakow uzytego tokena: \"{token[:15]}...\" (sprawdz czy sie zgadza)"
+            )
+        elif r.status_code == 404:
+            return False, (
+                f"GitHub zwrocilo 404 - nie znaleziono repozytorium \"{repo}\". "
+                "Najczesciej oznacza to ze token nie ma dostepu do tego repo "
+                "(sprawdz 'Repository access' przy generowaniu tokena) albo nazwa repo jest bledna."
+            )
+        elif r.status_code == 403:
+            return False, (
+                f"GitHub zwrocilo 403 - brak uprawnien. Sprawdz czy token ma "
+                "uprawnienie 'Actions: Read and write' (Settings -> Permissions -> Actions)."
+            )
         else:
-            return False, f"GitHub API zwrocilo blad {r.status_code}: {r.text[:200]}"
+            return False, f"GitHub API zwrocilo blad {r.status_code}: {r.text[:300]}"
     except Exception as e:
         return False, f"Blad polaczenia z GitHub API: {e}"
 
