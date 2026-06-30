@@ -6,6 +6,7 @@ import radar
 import downloader
 import market
 import cfo_analyzer
+import raporty
 
 # 1. Konfiguracja głównej strony
 st.set_page_config(page_title="PickPivot Platform", page_icon="⚡", layout="wide")
@@ -41,7 +42,7 @@ aktywna_zakladka = st.sidebar.radio(
         "2. Ściągacz Interpretacji",
         "3. Global Market Scanner",
         "4. Analiza Wskaźnikowa",
-        "5. Historia Pobierania (Wkrótce)",
+        "5. Raporty Tygodniowe",
         "6. Ustawienia Systemu (Wkrótce)"
     ]
 )
@@ -62,6 +63,8 @@ elif aktywna_zakladka.startswith("3."):
     market.run_module()
 elif aktywna_zakladka.startswith("4."):
     cfo_analyzer.run_module()
+elif aktywna_zakladka.startswith("5."):
+    raporty.run_module()
 else:
     # Obsługa zakładek, które są dopiero w planach
     nazwa_modulu = aktywna_zakladka.split('. ')[1] if '. ' in aktywna_zakladka else 'Moduł'
