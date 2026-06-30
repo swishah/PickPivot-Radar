@@ -123,20 +123,34 @@ def _renderuj_panel_archiwum(arch, nazwa):
     if stats.get("per_podatek"):
         st.caption("  |  ".join(f"**{k}:** {v}" for k, v in stats["per_podatek"].items()))
 
-    with st.expander("Przegladaj i pobierz z archiwum"):
-        col_f1, col_f2, col_f3 = st.columns(3)
-        with col_f1:
-            filtr_pod = st.multiselect("Podatek:", ["PIT","CIT","VAT","AKCYZA"], key="arch_pod")
-        with col_f2:
-            filtr_rok = st.selectbox("Rok:", [None,2024,2025,2026],
-                format_func=lambda x: "Wszystkie" if x is None else str(x), key="arch_rok")
-        with col_f3:
-            filtr_mies = st.selectbox("Miesiac:", [None]+list(range(1,13)),
-                format_func=lambda x: "Wszystkie" if x is None else utils.MIESIACE_PL[x-1],
-                key="arch_mies")
+    with st.expander("📂 Explorer Archiwum", expanded=True):
 
-        if st.button("Szukaj w archiwum", use_container_width=True):
-            with st.spinner("Szukam..."):
+        # ── FILTRY ──────────────────────────────────────────────────────────
+        col_f1, col_f2, col_f3, col_btn = st.columns([2, 2, 2, 1])
+        with col_f1:
+            filtr_pod = st.multiselect(
+                "Podatek:", ["PIT", "CIT", "VAT", "AKCYZA"],
+                key="arch_pod", placeholder="Wszystkie"
+            )
+        with col_f2:
+            filtr_rok = st.selectbox(
+                "Rok:", [None, 2024, 2025, 2026],
+                format_func=lambda x: "Wszystkie" if x is None else str(x),
+                key="arch_rok"
+            )
+        with col_f3:
+            filtr_mies = st.selectbox(
+                "Miesiac:", [None] + list(range(1, 13)),
+                format_func=lambda x: "Wszystkie" if x is None else utils.MIESIACE_PL[x - 1],
+                key="arch_mies"
+            )
+        with col_btn:
+            st.markdown("<br>", unsafe_allow_html=True)
+            szukaj = st.button("🔍 Szukaj", use_container_width=True, type="primary")
+
+        # ── WYSZUKIWANIE ────────────────────────────────────────────────────
+        if szukaj:
+            with st.spinner("Przeszukuje archiwum..."):
                 wyniki = []
                 for pod in (filtr_pod or [None]):
                     wyniki += arch.pobierz_rekordy_z_archiwum(
@@ -146,24 +160,56 @@ def _renderuj_panel_archiwum(arch, nazwa):
                     rid = arch._id_z_rekordu(r)
                     if rid not in seen:
                         seen.add(rid); unikalne.append(r)
-            st.session_state["arch_podglad"] = unikalne
+            st.session_state["arch_podglad"]       = unikalne
+            st.session_state["arch_podglad_filtr"] = {
+                "pod": filtr_pod, "rok": filtr_rok, "mies": filtr_mies
+            }
 
+        # ── WYNIKI ──────────────────────────────────────────────────────────
         podglad = st.session_state.get("arch_podglad", [])
+        filtr_info = st.session_state.get("arch_podglad_filtr", {})
+
         if podglad:
-            st.success(f"Znaleziono **{len(podglad)}** dokumentow.")
-            for r in podglad[:20]:
-                st.markdown(f"- **{r['Sygnatura']}** | {r['Data']} | {r['Podatek']}")
-            if len(podglad) > 20:
-                st.caption(f"... i {len(podglad)-20} wiecej.")
-            opis = ", ".join(filter(None, [
-                "/".join(filtr_pod) if filtr_pod else None,
-                str(filtr_rok) if filtr_rok else None,
-                utils.MIESIACE_PL[filtr_mies-1] if filtr_mies else None,
-            ])) or "cale archiwum"
-            st.download_button("Pobierz jako Word", data=_generuj_word(podglad, opis),
-                file_name=f"Archiwum_{opis.replace(', ','_')}_{datetime.now().strftime('%Y%m%d')}.docx",
+            # Nagłówek z liczbą
+            pod_str  = "/".join(filtr_info.get("pod") or ["wszystkie podatki"])
+            rok_str  = str(filtr_info["rok"]) if filtr_info.get("rok") else "wszystkie lata"
+            mies_str = utils.MIESIACE_PL[filtr_info["mies"] - 1] if filtr_info.get("mies") else "wszystkie miesiace"
+            st.success(f"📄 Znaleziono **{len(podglad)}** interpretacji — {pod_str} / {rok_str} / {mies_str}")
+
+            # Grupowanie wg podatku dla czytelnosci
+            grupy = {}
+            for r in podglad:
+                grupy.setdefault(r["Podatek"], []).append(r)
+
+            for podatek, rekordy in sorted(grupy.items()):
+                st.markdown(f"**{podatek}** — {len(rekordy)} interpretacji")
+
+                # Tabela sygnatur
+                dane_tab = [
+                    {"#": i + 1, "Sygnatura": r["Sygnatura"], "Data wydania": r["Data"]}
+                    for i, r in enumerate(sorted(rekordy, key=lambda x: x["Data"], reverse=True))
+                ]
+                import pandas as pd
+                st.dataframe(
+                    pd.DataFrame(dane_tab),
+                    use_container_width=True,
+                    hide_index=True,
+                    height=min(400, 38 + len(dane_tab) * 35),  # dynamiczna wysokosc
+                )
+
+            # Pobieranie Word
+            opis = f"{pod_str}_{rok_str}_{mies_str}".replace(" ", "_")
+            st.download_button(
+                f"📥 Pobierz wszystkie jako Word ({len(podglad)} interpretacji)",
+                data=_generuj_word(podglad, opis.replace("_", " ")),
+                file_name=f"Archiwum_{opis}_{datetime.now().strftime('%Y%m%d')}.docx",
                 mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                use_container_width=True)
+                use_container_width=True,
+            )
+
+        elif szukaj:
+            st.warning("Brak interpretacji w archiwum dla wybranych kryteriow.")
+
     st.markdown("---")
 
 
@@ -299,7 +345,15 @@ def run_module():
             kontener_st.empty(); pasek_list.empty()
 
         if bledy_api:
-            st.error(f"Serwer MF odrzucil {bledy_api} zapytan. Odczekaj 15-30 min."); st.stop()
+            st.error(
+                f"Serwer Ministerstwa Finansow odrzucil {bledy_api} zapytan. "
+                "Mozliwe przyczyny:\n"
+                "- Chwilowe przeciazenie serwera MF (najczestsze) — odczekaj 15-30 min\n"
+                "- Zbyt wiele zapytan z jednego IP — zmniejsz liczbe watkow do 2\n"
+                "- Przerwa techniczna na eureka.mf.gov.pl\n\n"
+                "Sprawdz reczenie: https://eureka.mf.gov.pl/informacje/podglad/573042"
+            )
+            st.stop()
 
         st.info(f"Znaleziono **{znalezione_ogolem}** w MF. W archiwum: **{len(id_w_archiwum)}**. Do pobrania: **{len(do_pobrania)}**.")
 
