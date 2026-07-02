@@ -112,6 +112,64 @@ def wyczysc_tekst_dla_worda(tekst):
     )
 
 # ---------------------------------------------------------------------------
+# ► NOWE: OSZCZĘDNOŚĆ MIEJSCA — normalizacja tekstu przed zapisem do bazy
+# ---------------------------------------------------------------------------
+def _wyczysc_i_znormalizuj_tekst(tekst: str) -> str:
+    """
+    Redukuje rozmiar tekstu PRZED zapisaniem go do bazy, bez utraty tresci
+    merytorycznej:
+
+    1. Usuwa linie powtarzajace sie 3+ razy w obrebie jednego dokumentu.
+       Wielostronicowe PDF-y maja nagłowek/stopke/sygnature powtorzona
+       RAZ NA KAZDA STRONE - to czysty artefakt ekstrakcji. Tresc prawna
+       praktycznie nigdy nie powtarza sie doslownie 3+ razy w jednym
+       dokumencie, wiec ten prog jest bezpieczny.
+    2. Redukuje wielokrotne puste linie do pojedynczej.
+    3. Usuwa biale znaki na koncach linii.
+
+    Bezpieczne dla wyszukiwania pelnotekstowego i integracji z GPT - to
+    wciaz zwykly tekst plain-text, tylko bez smieci ekstrakcji.
+    """
+    if not tekst:
+        return tekst
+
+    linie = tekst.split('\n')
+
+    # Policz wystapienia kazdej niepustej linii (min. 3 znaki - pomija
+    # pojedyncze cyfry/znaki interpunkcyjne ktore moga powtarzac sie
+    # naturalnie, np. numeracja podpunktow "a)", "b)")
+    licznik: dict[str, int] = {}
+    for linia in linie:
+        znormalizowana = linia.strip()
+        if len(znormalizowana) >= 3:
+            licznik[znormalizowana] = licznik.get(znormalizowana, 0) + 1
+
+    # Linie powtarzajace sie 3+ razy = prawdopodobnie naglowek/stopka/watermark
+    powtarzajace_sie = {l for l, n in licznik.items() if n >= 3}
+
+    wynik = []
+    juz_uzyte = set()
+    for linia in linie:
+        znormalizowana = linia.strip()
+        if znormalizowana in powtarzajace_sie:
+            if znormalizowana not in juz_uzyte:
+                wynik.append(linia)
+                juz_uzyte.add(znormalizowana)
+            # kolejne wystapienia tej samej linii pomijamy
+        else:
+            wynik.append(linia)
+
+    tekst_oczyszczony = '\n'.join(wynik)
+
+    # Redukcja 3+ pustych linii pod rzad do pojedynczej pustej linii
+    tekst_oczyszczony = re.sub(r'\n{3,}', '\n\n', tekst_oczyszczony)
+    # Usuniecie bialych znakow na koncach kazdej linii
+    tekst_oczyszczony = '\n'.join(l.rstrip() for l in tekst_oczyszczony.split('\n'))
+
+    return tekst_oczyszczony.strip()
+
+
+# ---------------------------------------------------------------------------
 # ► NOWE: EKSTRAKCJA TEKSTU Z HTML (szybsza niż PDF)
 # ---------------------------------------------------------------------------
 def _pobierz_tekst_html(id_dokumentu, sesja=None):
@@ -150,14 +208,18 @@ def _pobierz_tekst_html(id_dokumentu, sesja=None):
 def pobierz_tekst_pdf(id_dokumentu, sesja=None):
     """
     Próbuje pobrać dokument w kolejności:
-      1. HTML (szybciej, mniej obciążeń serwera)
+      1. HTML (szybciej, mniej obciążeń serwera, z natury "chudszy" - brak
+         podziału na strony, więc brak powtórzeń nagłówków/stopek)
       2. PDF (pełna wierność, jako fallback)
+    Tekst jest normalizowany (patrz _wyczysc_i_znormalizuj_tekst) przed
+    zwróceniem - usuwa artefakty ekstrakcji, realnie zmniejszając rozmiar
+    zapisywany w bazie danych.
     Zwraca (tekst, status).
     """
     # --- próba HTML ---
     tekst_html, status_html = _pobierz_tekst_html(id_dokumentu, sesja)
     if tekst_html:
-        return tekst_html, "OK"
+        return _wyczysc_i_znormalizuj_tekst(tekst_html), "OK"
     if status_html == "BLOKADA":
         return None, "BLOKADA"     # nie próbujemy PDF jeśli IP zablokowane
 
@@ -175,7 +237,7 @@ def pobierz_tekst_pdf(id_dokumentu, sesja=None):
                     p.extract_text() or "" for p in reader.pages
                 ).strip()
                 if tekst:
-                    return tekst, "OK"
+                    return _wyczysc_i_znormalizuj_tekst(tekst), "OK"
                 return None, "BRAK_PLIKU"   # PDF bez tekstu (skany)
             elif r.status_code in (404, 400):
                 return None, "BRAK_PLIKU"
