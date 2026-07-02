@@ -121,6 +121,18 @@ def pobierz_plik_raportu(raport_id: int):
 
 
 # ---------------------------------------------------------------------------
+# HISTORIA RAPORTOW NA ZADANIE (status + weryfikacja)
+# ---------------------------------------------------------------------------
+def pobierz_historie_raportow(limit: int = 30) -> list:
+    db = _get_db()
+    try:
+        return db_core.pobierz_historie_raportow(db, limit=limit)
+    except Exception as e:
+        st.warning(f"Blad odczytu historii: {e}")
+        return []
+
+
+# ---------------------------------------------------------------------------
 # POMOCNICZE (reeksport z db_core dla wstecznej kompatybilnosci)
 # ---------------------------------------------------------------------------
 def _klucz_kombinacji(podatek, rok, miesiac):

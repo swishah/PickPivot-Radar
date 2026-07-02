@@ -150,6 +150,20 @@ SCHEMA_SQL = [
         UNIQUE(tydzien_klucz, podatek)
     )""",
     "CREATE INDEX IF NOT EXISTS idx_r1 ON raporty_tygodniowe(tydzien_klucz)",
+
+    # ── NOWA TABELA: historia uruchomien raportu na zadanie (status + weryfikacja) ──
+    """CREATE TABLE IF NOT EXISTS historia_raportow_na_zadanie (
+        id            SERIAL PRIMARY KEY,
+        uruchomiono   TEXT NOT NULL,        -- timestamp ISO
+        rok           INTEGER NOT NULL,
+        miesiac       INTEGER NOT NULL,
+        podatek       TEXT NOT NULL,         -- pojedynczy podatek lub "WSZYSTKIE"
+        liczba_dok    INTEGER DEFAULT 0,
+        liczba_prob   INTEGER DEFAULT 1,     -- ile prob calego raportu bylo potrzebnych
+        status        TEXT NOT NULL,         -- OK / NIEZGODNOSC / WERYFIKACJA_NIEUDANA / ERROR
+        szczegoly     TEXT DEFAULT ''        -- np. "MF: 45, archiwum: 43 (różnica: -2)"
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_h1 ON historia_raportow_na_zadanie(uruchomiono)",
 ]
 
 
@@ -293,6 +307,38 @@ def pobierz_plik_raportu(db: SupabaseDB, raport_id: int) -> bytes | None:
     if isinstance(plik, memoryview):
         plik = plik.tobytes()
     return plik, nazwa
+
+
+# ---------------------------------------------------------------------------
+# HISTORIA RAPORTOW NA ZADANIE — log statusow i wynikow weryfikacji
+# ---------------------------------------------------------------------------
+def zapisz_historie_raportu(
+    db: SupabaseDB,
+    rok: int,
+    miesiac: int,
+    podatek: str,
+    liczba_dok: int,
+    liczba_prob: int,
+    status: str,
+    szczegoly: str = "",
+):
+    """Zapisuje jeden wpis historii po zakonczeniu raportu na zadanie."""
+    db.wykonaj(
+        """INSERT INTO historia_raportow_na_zadanie
+            (uruchomiono, rok, miesiac, podatek, liczba_dok, liczba_prob, status, szczegoly)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+        (datetime.now().isoformat(timespec="seconds"), rok, miesiac, podatek,
+         liczba_dok, liczba_prob, status, szczegoly)
+    )
+
+
+def pobierz_historie_raportow(db: SupabaseDB, limit: int = 30) -> list:
+    """Zwraca ostatnie N wpisow historii, najnowsze pierwsze."""
+    return db.wykonaj(
+        """SELECT * FROM historia_raportow_na_zadanie
+           ORDER BY uruchomiono DESC LIMIT %s""",
+        (limit,), fetch=True
+    )
 
 
 # ---------------------------------------------------------------------------
