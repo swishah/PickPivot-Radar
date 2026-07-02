@@ -3,7 +3,6 @@ import time
 
 # Załadowanie wszystkich Twoich odseparowanych plików
 import radar
-import downloader
 import market
 import cfo_analyzer
 import raporty
@@ -42,8 +41,7 @@ aktywna_zakladka = st.sidebar.radio(
         "2. Ściągacz Interpretacji",
         "3. Global Market Scanner",
         "4. Analiza Wskaźnikowa",
-        "5. Raporty Tygodniowe",
-        "6. Ustawienia Systemu (Wkrótce)"
+        "5. Ustawienia Systemu (Wkrótce)"
     ]
 )
 
@@ -58,13 +56,11 @@ st.sidebar.caption("© 2026 PickPivot Modular Engine")
 if aktywna_zakladka.startswith("1."):
     radar.run_module()
 elif aktywna_zakladka.startswith("2."):
-    downloader.run_module()
+    raporty.run_module()
 elif aktywna_zakladka.startswith("3."):
     market.run_module()
 elif aktywna_zakladka.startswith("4."):
     cfo_analyzer.run_module()
-elif aktywna_zakladka.startswith("5."):
-    raporty.run_module()
 else:
     # Obsługa zakładek, które są dopiero w planach
     nazwa_modulu = aktywna_zakladka.split('. ')[1] if '. ' in aktywna_zakladka else 'Moduł'

@@ -205,10 +205,17 @@ def generuj_raport_dla_podatku(
     opis_okresu: str,
     log_fn=print,
     weryfikuj: bool = True,
+    generuj_plik: bool = True,
 ) -> dict:
     """
     Pelny przebieg dla JEDNEGO podatku: uzupelnia archiwum, weryfikuje
-    kompletnosc (drugie zapytanie do MF), generuje Word, zwraca wynik.
+    kompletnosc (drugie zapytanie do MF), opcjonalnie generuje Word, zwraca wynik.
+
+    generuj_plik: jesli False, pomija budowanie pliku Word (plik_bytes zawsze
+    None) - uzywane przez "Sciagacz Interpretacji" -> Pobieranie na zadanie,
+    ktore ma tylko wgrywac dane do bazy i wysylac powiadomienie mailem, bez
+    generowania dokumentu. raport_tygodniowy.py nie przekazuje tego parametru,
+    wiec dziala dokladnie tak jak wczesniej (generuj_plik=True domyslnie).
 
     Zwraca dict:
         {
@@ -258,7 +265,9 @@ def generuj_raport_dla_podatku(
                         podatek, data_od, data_do, len(rekordy), log_fn=log_fn, max_prob=2
                     )
 
-        plik_bytes = generuj_word(rekordy, podatek, opis_okresu, tytul_raportu="Raport na zadanie")
+        plik_bytes = None
+        if generuj_plik:
+            plik_bytes = generuj_word(rekordy, podatek, opis_okresu, tytul_raportu="Raport na zadanie")
 
         # Status koncowy uwzglednia wynik weryfikacji
         status_finalny = status_pobierania
@@ -280,6 +289,87 @@ def generuj_raport_dla_podatku(
             "nowych_pobranych": 0, "status": "ERROR", "error_msg": str(e),
             "weryfikacja": None,
         }
+
+
+# ---------------------------------------------------------------------------
+# WYSYLKA POWIADOMIENIA MAILEM — BEZ ZALACZNIKA (Sciagacz Interpretacji)
+# ---------------------------------------------------------------------------
+def wyslij_email_powiadomienie_pobrania(
+    wyniki: list,
+    opis_okresu: str,
+    gmail_adres: str,
+    gmail_haslo: str,
+    odbiorca: str,
+    log_fn=print,
+) -> bool:
+    """
+    Wysyla PROSTE powiadomienie e-mail o zakonczonym pobraniu interpretacji
+    do bazy danych — BEZ zalacznika Word. Uzywane przez "Sciagacz
+    Interpretacji" -> Pobieranie na zadanie, gdzie celem jest wylacznie
+    zasilenie bazy danymi, nie wygenerowanie dokumentu.
+
+    wyniki: lista dict z generuj_raport_dla_podatku() (wywolanej z generuj_plik=False)
+    Zwraca True przy udanej wysylce.
+    """
+    podatki_str = "/".join(w["podatek"] for w in wyniki)
+    ma_niezgodnosc = any(
+        w.get("weryfikacja") and w["weryfikacja"]["status"] in ("NIEZGODNOSC", "WERYFIKACJA_NIEUDANA")
+        for w in wyniki
+    )
+    temat_status = " [wymaga sprawdzenia]" if ma_niezgodnosc else ""
+    temat = f"PickPivot — Pobrano do bazy: {podatki_str} ({opis_okresu}){temat_status}"
+
+    def _status_kom(w):
+        wer = w.get("weryfikacja")
+        if not wer:
+            return "brak weryfikacji"
+        mapa = {
+            "OK": "✅ potwierdzona kompletność",
+            "NIEZGODNOSC": f"⚠️ rozbieżność (różnica: {wer['roznica']})",
+            "WERYFIKACJA_NIEUDANA": "ℹ️ niepotwierdzone (MF niedostępne)",
+        }
+        return mapa.get(wer["status"], wer["status"])
+
+    wiersze = "".join(
+        f'<tr><td>{w["podatek"]}</td><td>{w["liczba_dok"]}</td>'
+        f'<td>{w.get("nowych_pobranych", 0)}</td>'
+        f'<td>{_status_kom(w)}</td></tr>'
+        for w in wyniki
+    )
+
+    tresc_html = f"""
+    <html><body style="font-family: Arial, sans-serif;">
+    <h2>📥 PickPivot — Ściągacz Interpretacji: pobieranie na żądanie</h2>
+    <p><b>Okres:</b> {opis_okresu}</p>
+    <p>Interpretacje zostały pobrane i zapisane w bazie danych. Podsumowanie:</p>
+    <table border="1" cellpadding="8" cellspacing="0" style="border-collapse: collapse;">
+        <tr style="background-color: #2C3E50; color: white;">
+            <th>Podatek</th><th>Łącznie w bazie (ten okres)</th><th>Nowo pobranych</th><th>Weryfikacja</th>
+        </tr>
+        {wiersze}
+    </table>
+    <p style="color: #888; font-size: 12px; margin-top: 20px;">
+        Wiadomość wygenerowana automatycznie przez PickPivot — Ściągacz Interpretacji.
+    </p>
+    </body></html>
+    """
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = temat
+    msg["From"]    = gmail_adres
+    msg["To"]      = odbiorca
+    msg.attach(MIMEText(tresc_html, "html", "utf-8"))
+
+    try:
+        with smtplib.SMTP("smtp.gmail.com", 587) as server:
+            server.starttls()
+            server.login(gmail_adres, gmail_haslo)
+            server.send_message(msg)
+        log_fn(f"E-mail powiadamiający wysłany do {odbiorca}.")
+        return True
+    except Exception as e:
+        log_fn(f"BŁĄD wysyłki email: {e}")
+        return False
 
 
 # ---------------------------------------------------------------------------

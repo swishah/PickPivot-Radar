@@ -1,12 +1,15 @@
 """
-raporty.py — Modul 5: Raporty Tygodniowe + Raport na zadanie.
+raporty.py — Modul 2: Sciagacz Interpretacji.
 
 Dwie sekcje:
   1. Raporty automatyczne (cotygodniowe, generowane przez cron w GitHub Actions)
-  2. Raport na zadanie (rok/miesiac/podatek wybrany recznie) - dwa tryby:
-     a) "Generuj teraz" - liczy sie w samej aplikacji Streamlit (czekasz na wynik)
-     b) "Generuj w tle" - wysyla zadanie do GitHub Actions (mozesz zamknac przegladarke,
-        wynik przyjdzie mailem)
+     - NIEZMIENIONE: nadal generuja i przechowuja gotowe pliki Word.
+  2. Pobieranie na zadanie (rok/miesiac/podatek wybrany recznie) - dwa tryby:
+     a) "Pobierz teraz" - liczy sie w samej aplikacji Streamlit (czekasz na wynik)
+     b) "Pobierz w tle" - wysyla zadanie do GitHub Actions (mozesz zamknac przegladarke)
+     W obu trybach: interpretacje trafiaja do bazy danych, NIE generuje sie
+     scalonego pliku Word - po zakonczeniu wysylane jest powiadomienie mailowe
+     z podsumowaniem (liczba dokumentow, status weryfikacji).
 """
 
 import streamlit as st
@@ -38,7 +41,7 @@ def _formatuj_okres(data_od: str, data_do: str) -> str:
 
 
 # =============================================================================
-# SEKCJA 1: RAPORTY AUTOMATYCZNE (TYGODNIOWE)
+# SEKCJA 1: RAPORTY AUTOMATYCZNE (TYGODNIOWE) — bez zmian
 # =============================================================================
 def _renderuj_raporty_automatyczne(arch):
     st.markdown("### 📅 Raporty automatyczne (cotygodniowe)")
@@ -100,7 +103,7 @@ def _renderuj_raporty_automatyczne(arch):
 
 
 # =============================================================================
-# SEKCJA 2: RAPORT NA ZADANIE
+# SEKCJA 2: POBIERANIE NA ZADANIE (bez generowania pliku Word)
 # =============================================================================
 def _wyslij_github_dispatch(rok: int, miesiac: int, podatek: str) -> tuple:
     """
@@ -117,7 +120,6 @@ def _wyslij_github_dispatch(rok: int, miesiac: int, podatek: str) -> tuple:
             "[github]\ntoken = \"ghp_...\"\nrepo = \"uzytkownik/nazwa-repo\""
         )
 
-    # Walidacja formatu repo - czesty blad to wklejenie pelnego URL
     if repo.startswith("http") or "github.com" in repo:
         return False, (
             f"Pole 'repo' zawiera URL zamiast formatu 'login/nazwa-repo'. "
@@ -129,7 +131,6 @@ def _wyslij_github_dispatch(rok: int, miesiac: int, podatek: str) -> tuple:
             f"Masz: \"{repo}\""
         )
 
-    # Walidacja formatu tokena
     if not (token.startswith("github_pat_") or token.startswith("ghp_")):
         return False, (
             f"Token nie wyglada jak prawidlowy GitHub token (powinien zaczynac sie "
@@ -155,7 +156,7 @@ def _wyslij_github_dispatch(rok: int, miesiac: int, podatek: str) -> tuple:
     try:
         r = http_requests.post(url, headers=headers, json=payload, timeout=15)
         if r.status_code == 204:
-            return True, "Zadanie wyslane do GitHub Actions. Wynik przyjdzie mailem za kilka minut."
+            return True, "Zadanie wyslane do GitHub Actions. Powiadomienie o wyniku przyjdzie mailem."
         elif r.status_code == 401:
             return False, (
                 "GitHub odrzucil token (401 Bad credentials). Najczesciej oznacza to:\n"
@@ -184,12 +185,15 @@ def _wyslij_github_dispatch(rok: int, miesiac: int, podatek: str) -> tuple:
         return False, f"Blad polaczenia z GitHub API: {e}"
 
 
-def _generuj_raport_na_zywo(rok: int, miesiac: int, podatek: str):
-    """Generuje raport bezposrednio w aplikacji Streamlit, z paskiem postepu."""
+def _pobierz_na_zywo(rok: int, miesiac: int, podatek: str):
+    """
+    Pobiera interpretacje bezposrednio w aplikacji Streamlit, z paskiem
+    postepu. NIE generuje pliku Word - tylko wgrywa dane do bazy i wysyla
+    powiadomienie mailowe po zakonczeniu.
+    """
     import raport_silnik as silnik
     import db_core
 
-    # Pobierz polaczenie z baza (przez ten sam mechanizm co archiwum_supabase)
     try:
         s = dict(st.secrets["supabase"])
         db = db_core.SupabaseDB(s)
@@ -213,65 +217,77 @@ def _generuj_raport_na_zywo(rok: int, miesiac: int, podatek: str):
 
     for i, pod in enumerate(podatki):
         st.write(f"**Przetwarzam {pod}...**")
-        wynik = silnik.generuj_raport_dla_podatku(db, pod, data_od, data_do, opis_okresu, log_fn=log_fn)
+        wynik = silnik.generuj_raport_dla_podatku(
+            db, pod, data_od, data_do, opis_okresu, log_fn=log_fn, generuj_plik=False
+        )
         wyniki.append(wynik)
         pasek.progress((i + 1) / len(podatki))
 
     pasek.progress(1.0)
     log_kontener.empty()
 
-    # Podsumowanie i przyciski pobierania
-    st.success(f"Gotowe! Wygenerowano raport dla okresu: {opis_okresu}")
+    st.success(f"Gotowe! Interpretacje dla okresu {opis_okresu} zostaly wgrane do bazy.")
 
     for w in wyniki:
-        col1, col2 = st.columns([3, 1])
-        with col1:
-            st.write(f"**{w['podatek']}**: {w['liczba_dok']} dokumentow")
-        with col2:
-            if w["plik_bytes"]:
-                nazwa = f"Raport_{w['podatek']}_{opis_okresu.replace(' ', '_')}.docx"
-                st.download_button(
-                    "📥 Pobierz", data=w["plik_bytes"], file_name=nazwa,
-                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                    key=f"dl_zywo_{w['podatek']}",
-                )
+        wer = w.get("weryfikacja")
+        wer_txt = ""
+        if wer:
+            mapa = {
+                "OK": "✅ potwierdzona kompletność",
+                "NIEZGODNOSC": f"⚠️ różnica: {wer['roznica']}",
+                "WERYFIKACJA_NIEUDANA": "ℹ️ niepotwierdzone",
+            }
+            wer_txt = f" — {mapa.get(wer['status'], wer['status'])}"
+        st.write(
+            f"**{w['podatek']}**: {w['liczba_dok']} dokumentow w bazie "
+            f"(nowo pobranych: {w['nowych_pobranych']}){wer_txt}"
+        )
 
-    # Opcjonalna wysylka mailem
-    if any(w["plik_bytes"] for w in wyniki):
-        if st.button("📧 Wyslij ten raport mailem", use_container_width=True):
-            gmail_adres = st.secrets.get("gmail", {}).get("adres", "")
-            gmail_haslo = st.secrets.get("gmail", {}).get("haslo_aplikacji", "")
-            odbiorca    = st.secrets.get("gmail", {}).get("odbiorca", gmail_adres)
+    # ── AUTOMATYCZNE POWIADOMIENIE MAILEM (bez zalacznika) ──────────────────
+    gmail_adres = st.secrets.get("gmail", {}).get("adres", "")
+    gmail_haslo = st.secrets.get("gmail", {}).get("haslo_aplikacji", "")
+    odbiorca    = st.secrets.get("gmail", {}).get("odbiorca", gmail_adres)
 
-            if not gmail_adres or not gmail_haslo:
-                st.error(
-                    "Brak konfiguracji Gmail w Secrets. Dodaj sekcje:\n"
-                    "[gmail]\nadres = \"twoj@gmail.com\"\nhaslo_aplikacji = \"...\"\nodbiorca = \"...\""
-                )
-            else:
-                with st.spinner("Wysylam..."):
-                    if len(wyniki) == 1 and wyniki[0]["plik_bytes"]:
-                        w = wyniki[0]
-                        nazwa = f"Raport_{w['podatek']}_{opis_okresu.replace(' ', '_')}.docx"
-                        ok = silnik.wyslij_email_z_zalacznikiem(
-                            w["plik_bytes"], nazwa, w["podatek"], opis_okresu, w["liczba_dok"],
-                            gmail_adres, gmail_haslo, odbiorca,
-                        )
-                    else:
-                        ok = silnik.wyslij_email_podsumowanie_wielu(
-                            wyniki, opis_okresu, gmail_adres, gmail_haslo, odbiorca,
-                        )
-                if ok:
-                    st.success(f"Wyslano na {odbiorca}!")
-                else:
-                    st.error("Blad wysylki — sprawdz konfiguracje Gmail.")
+    if gmail_adres and gmail_haslo:
+        with st.spinner("Wysylam powiadomienie mailem..."):
+            ok = silnik.wyslij_email_powiadomienie_pobrania(
+                wyniki, opis_okresu, gmail_adres, gmail_haslo, odbiorca,
+            )
+        if ok:
+            st.info(f"📧 Powiadomienie wyslane na {odbiorca}.")
+        else:
+            st.warning("Nie udalo sie wyslac powiadomienia mailem (pobieranie i tak sie powiodlo).")
+    else:
+        st.caption("Brak konfiguracji Gmail w Secrets — pomijam powiadomienie mailem.")
+
+    # ── ZAPIS HISTORII (spojnosc z trybem "w tle") ──────────────────────────
+    try:
+        liczba_dok_lacznie = sum(w["liczba_dok"] for w in wyniki)
+        statusy = [w["status"] for w in wyniki]
+        if "ERROR" in statusy:
+            status_koncowy = "ERROR"
+        elif "NIEZGODNOSC" in statusy:
+            status_koncowy = "NIEZGODNOSC"
+        elif "WERYFIKACJA_NIEUDANA" in statusy:
+            status_koncowy = "WERYFIKACJA_NIEUDANA"
+        else:
+            status_koncowy = "OK"
+        db_core.zapisz_historie_raportu(
+            db, rok=rok, miesiac=miesiac, podatek=podatek,
+            liczba_dok=liczba_dok_lacznie, liczba_prob=1,
+            status=status_koncowy, szczegoly="",
+        )
+        st.session_state.pop("historia_raportow_cache", None)  # wymus odswiezenie listy
+    except Exception as e:
+        st.caption(f"(historia nie zostala zapisana: {e})")
 
 
-def _renderuj_raport_na_zadanie():
-    st.markdown("### 🎯 Raport na żądanie")
+def _renderuj_pobieranie_na_zadanie():
+    st.markdown("### 🎯 Pobieranie na żądanie")
     st.caption(
-        "Wybierz rok, miesiąc i podatek — wygeneruj raport teraz w aplikacji "
-        "lub zleć generowanie w tle przez GitHub Actions (wynik przyjdzie mailem)."
+        "Wybierz rok, miesiąc i podatek — interpretacje zostaną pobrane i "
+        "zapisane w bazie danych. Po zakończeniu dostaniesz powiadomienie "
+        "mailem z podsumowaniem (bez załącznika)."
     )
 
     col1, col2, col3 = st.columns(3)
@@ -287,18 +303,18 @@ def _renderuj_raport_na_zadanie():
             "Podatek:", ["VAT", "PIT", "CIT", "AKCYZA", "WSZYSTKIE"], key="zad_podatek"
         )
 
-    st.markdown("**Tryb generowania:**")
+    st.markdown("**Tryb pobierania:**")
     tryb = st.radio(
         "Wybierz tryb:",
-        ["⚡ Generuj teraz (w aplikacji, czekasz na wynik)",
-         "🌙 Generuj w tle (GitHub Actions, wynik mailem)"],
+        ["⚡ Pobierz teraz (w aplikacji, czekasz na wynik)",
+         "🌙 Pobierz w tle (GitHub Actions, powiadomienie mailem)"],
         label_visibility="collapsed",
         key="zad_tryb",
     )
 
-    if st.button("🚀 Uruchom generowanie", type="primary", use_container_width=True):
+    if st.button("🚀 Uruchom pobieranie", type="primary", use_container_width=True):
         if tryb.startswith("⚡"):
-            _generuj_raport_na_zywo(rok, miesiac, podatek)
+            _pobierz_na_zywo(rok, miesiac, podatek)
         else:
             with st.spinner("Wysylam zadanie do GitHub Actions..."):
                 sukces, komunikat = _wyslij_github_dispatch(rok, miesiac, podatek)
@@ -320,26 +336,101 @@ repo = "twoj-login/nazwa-repo"
 ```
                     """)
 
+    st.markdown("---")
+    _renderuj_historie_pobran()
+
+
+# =============================================================================
+# HISTORIA POBRAN — widoczna w aplikacji, oba tryby ("teraz" i "w tle")
+# =============================================================================
+def _renderuj_historie_pobran():
+    """
+    Pokazuje ostatnie uruchomienia pobierania na zadanie (oba tryby - zywy
+    i w tle, oba zapisuja wpis do bazy) z wyraznym statusem weryfikacji
+    kompletnosci.
+    """
+    st.markdown('### 📋 Historia pobrań')
+    st.caption(
+        "Status każdego pobrania — z informacją czy kompletność została "
+        "potwierdzona drugą weryfikacją względem API Ministerstwa Finansów."
+    )
+
+    arch = _wykryj_archiwum()
+    if arch is None:
+        return
+
+    if st.button("🔄 Odśwież historię", key="odswiez_historia"):
+        st.session_state.pop("historia_raportow_cache", None)
+
+    if "historia_raportow_cache" not in st.session_state:
+        with st.spinner("Wczytuję historię..."):
+            st.session_state["historia_raportow_cache"] = arch.pobierz_historie_raportow(limit=30)
+
+    historia = st.session_state["historia_raportow_cache"]
+
+    if not historia:
+        st.info('Brak historii — uruchom pierwsze pobieranie na żądanie, żeby pojawił się tutaj wpis.')
+        return
+
+    miesiace_pl = ["Styczen","Luty","Marzec","Kwiecien","Maj","Czerwiec",
+                   "Lipiec","Sierpien","Wrzesien","Pazdziernik","Listopad","Grudzien"]
+
+    ikony_statusu = {
+        "OK": "✅",
+        "NIEZGODNOSC": "⚠️",
+        "WERYFIKACJA_NIEUDANA": "ℹ️",
+        "ERROR": "❌",
+    }
+    opisy_statusu = {
+        "OK": "Potwierdzona kompletność",
+        "NIEZGODNOSC": "Wykryto rozbieżność",
+        "WERYFIKACJA_NIEUDANA": "Niepotwierdzone (MF niedostępne)",
+        "ERROR": "Błąd pobierania",
+    }
+
+    for wpis in historia:
+        ikona = ikony_statusu.get(wpis["status"], "❔")
+        opis_status = opisy_statusu.get(wpis["status"], wpis["status"])
+        okres_str = f"{miesiace_pl[wpis['miesiac']-1]} {wpis['rok']}"
+        czas_str = wpis["uruchomiono"][:16].replace("T", " ")
+
+        col1, col2, col3, col4 = st.columns([2, 2, 2, 3])
+        with col1:
+            st.write(f"{ikona} **{wpis['podatek']}**")
+        with col2:
+            st.write(okres_str)
+        with col3:
+            st.write(f"{wpis['liczba_dok']} dok.")
+        with col4:
+            tekst_statusu = opis_status
+            if wpis["liczba_prob"] > 1:
+                tekst_statusu += f" (próby: {wpis['liczba_prob']})"
+            st.write(tekst_statusu)
+
+        if wpis["szczegoly"]:
+            st.caption(f"　　Szczegóły: {wpis['szczegoly']}")
+        st.caption(f"　　{czas_str}")
+
 
 # =============================================================================
 # GLOWNY MODUL
 # =============================================================================
 def run_module():
-    st.title("Raporty")
+    st.title("Ściągacz Interpretacji")
 
     arch = _wykryj_archiwum()
     if arch is None:
         st.warning(
             "Archiwum Supabase nie jest skonfigurowane. "
-            "Raporty wymagaja polaczenia z baza danych - "
+            "Ten modul wymaga polaczenia z baza danych - "
             "skonfiguruj sekcje [supabase] w Streamlit Secrets."
         )
         return
 
-    tab1, tab2 = st.tabs(["📅 Raporty automatyczne", "🎯 Raport na żądanie"])
+    tab1, tab2 = st.tabs(["📅 Raporty automatyczne", "🎯 Pobieranie na żądanie"])
 
     with tab1:
         _renderuj_raporty_automatyczne(arch)
 
     with tab2:
-        _renderuj_raport_na_zadanie()
+        _renderuj_pobieranie_na_zadanie()
