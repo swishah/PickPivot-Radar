@@ -1,0 +1,48 @@
+name: Synchronizacja dzienna
+
+on:
+  schedule:
+    # GitHub Actions cron dziala w UTC. Polska to UTC+1 (zima) / UTC+2 (lato).
+    # 02:00 UTC = ok. 3:00 czasu polskiego zima / 4:00 lato.
+    # Dla joba synchronizacyjnego z ruchomym oknem 3 dni ta 1-godzinna
+    # sezonowa roznica nie ma znaczenia - okno i tak nachodzi na siebie
+    # miedzy kolejnymi dniami.
+    - cron: '0 2 * * *'
+
+  # Mozliwosc recznego uruchomienia z zakladki Actions (do testow)
+  workflow_dispatch:
+
+jobs:
+  synchronizuj:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Pobierz kod repozytorium
+        uses: actions/checkout@v4
+
+      - name: Ustaw Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Zainstaluj zaleznosci
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests PyPDF2 python-docx beautifulsoup4 lxml psycopg2-binary
+
+      - name: Uruchom synchronizacje dzienna
+        env:
+          SUPABASE_HOST:          ${{ secrets.SUPABASE_HOST }}
+          SUPABASE_PORT:          ${{ secrets.SUPABASE_PORT }}
+          SUPABASE_DB:            ${{ secrets.SUPABASE_DB }}
+          SUPABASE_USER:          ${{ secrets.SUPABASE_USER }}
+          SUPABASE_PASSWORD:      ${{ secrets.SUPABASE_PASSWORD }}
+          GMAIL_ADRES:            ${{ secrets.GMAIL_ADRES }}
+          GMAIL_HASLO_APLIKACJI:  ${{ secrets.GMAIL_HASLO_APLIKACJI }}
+          EMAIL_ODBIORCA:         ${{ secrets.EMAIL_ODBIORCA }}
+        run: python synchronizacja_dzienna.py
+
+      - name: Podsumowanie
+        if: always()
+        run: echo "Synchronizacja zakonczona. Sprawdz logi powyzej dla szczegolow."
