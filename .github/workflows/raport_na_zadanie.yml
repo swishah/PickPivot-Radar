@@ -50,7 +50,7 @@ on:
 jobs:
   generuj-raport-na-zadanie:
     runs-on: ubuntu-latest
-    timeout-minutes: 330
+    timeout-minutes: 120
 
     steps:
       - name: Pobierz kod repozytorium
