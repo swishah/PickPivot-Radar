@@ -80,34 +80,50 @@ def uzupelnij_archiwum(
             data_od.strftime("%Y-%m-%d"),
             data_do.strftime("%Y-%m-%d"),
             sesja, podatek, utils.KODY_PRZEPISOW[podatek],
+            log_fn=log_fn,
         )
 
-    if status != "OK":
-        log_fn(f"[{podatek}] OSTRZEZENIE: API MF zwrocilo status {status}")
-        return 0, status
+    # Twardy blad API - nie mamy wiarygodnej listy, przerywamy.
+    if status == "ERROR":
+        log_fn(f"[{podatek}] OSTRZEZENIE: API MF zwrocilo status ERROR")
+        return 0, "ERROR"
+
+    # NIEPELNE_POBRANIE: mamy CZESC listy (po auto-podziale zwykle wiekszosc).
+    # NIE odrzucamy jej - zapisujemy co mamy, a status propagujemy dalej,
+    # zeby warstwa wyzej wiedziala, ze warto ponowic douzupelnianie.
+    if status == "NIEPELNE_POBRANIE":
+        log_fn(f"[{podatek}] OSTRZEZENIE: pobrano niepelna liste z MF "
+               f"({len(lista)} dok.) - zapisuje to, co udalo sie zebrac.")
 
     do_pobrania = [d for d in lista if d["id"] not in znane_id]
     log_fn(f"[{podatek}] Znaleziono {len(lista)} w MF, do pobrania: {len(do_pobrania)}")
 
     if not do_pobrania:
         log_fn(f"[{podatek}] Archiwum juz aktualne dla tego okresu.")
-        return 0, "OK"
+        return 0, status   # zachowaj NIEPELNE_POBRANIE jesli wystapilo
 
-    def on_postep(completed, total, sygnatura, status):
+    def on_postep(completed, total, sygnatura, status_dok):
         if completed % 10 == 0 or completed == total:
-            log_fn(f"[{podatek}] Postep: {completed}/{total}")
+            log_fn(f"[{podatek}] Postep pobierania tresci: {completed}/{total}")
 
     nowe_tresci, _, _, blokada = utils.pobierz_dokumenty_rownolegle(
         do_pobrania, znane_id, set(),
         callback_postep=on_postep, workers=workers,
     )
 
+    if blokada:
+        status_koncowy = "BLOKADA"
+    elif status == "NIEPELNE_POBRANIE":
+        status_koncowy = "NIEPELNE_POBRANIE"
+    else:
+        status_koncowy = "OK"
+
     if nowe_tresci:
         zapisanych = db_core.zapisz_wiele_do_archiwum(db, nowe_tresci, "raport_na_zadanie")
         log_fn(f"[{podatek}] Zapisano {zapisanych} nowych dokumentow.")
-        return zapisanych, ("BLOKADA" if blokada else "OK")
+        return zapisanych, status_koncowy
 
-    return 0, ("BLOKADA" if blokada else "OK")
+    return 0, status_koncowy
 
 
 # ---------------------------------------------------------------------------
@@ -145,6 +161,7 @@ def weryfikuj_kompletnosc(
                     data_od.strftime("%Y-%m-%d"),
                     data_do.strftime("%Y-%m-%d"),
                     sesja, podatek, utils.KODY_PRZEPISOW[podatek],
+                    log_fn=log_fn,
                 )
 
             # "OK" i "NIEPELNE_POBRANIE" oba dostarczaja faktyczna liste -

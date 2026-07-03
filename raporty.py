@@ -145,7 +145,8 @@ def _pobierz_na_zywo(rok: int, miesiac: int, podatek: str):
 
     def log_fn(msg):
         log_lines.append(msg)
-        log_kontener.code("\n".join(log_lines[-15:]), language=None)
+        # Pokazuj pelna historie (przewijalne pole), zamiast ostatnich 15 linii.
+        log_kontener.code("\n".join(log_lines), language=None)
 
     pasek = st.progress(0)
     wyniki = []
@@ -159,7 +160,11 @@ def _pobierz_na_zywo(rok: int, miesiac: int, podatek: str):
         pasek.progress((i + 1) / len(podatki))
 
     pasek.progress(1.0)
+    # NIE czyscimy logow - przenosimy je do zwijanego panelu, zeby zostaly
+    # dostepne do wgladu (diagnostyka paginacji, podzialow okna itd.).
     log_kontener.empty()
+    with st.expander("📋 Pełny log przebiegu (paginacja, podziały okien, weryfikacja)", expanded=False):
+        st.code("\n".join(log_lines), language=None)
 
     st.success(f"Gotowe! Interpretacje dla okresu {opis_okresu} zostaly wgrane do bazy.")
 

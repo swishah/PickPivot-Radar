@@ -23,8 +23,16 @@ PLIK_REKORDOW_M2     = f"{FOLDER_DOCELOWY}/baza_tresci_m2.json"
 
 SEARCH_API_URL_BASE = (
     "https://eureka.mf.gov.pl/api/public/v1/wyszukiwarka/informacje/"
-    "?size=25&page={page}&sort=parametryPozycjonowania%2Casc"
+    "?size={size}&page={page}&sort=parametryPozycjonowania%2Casc"
 )
+# Rozmiar strony wynikow. Wiekszy = mniej zapytan = mniejsze ryzyko throttlingu
+# i szybciej. MF akceptuje 100.
+ROZMIAR_STRONY = 100
+# Twardy limit glebokosci paginacji po stronie MF: API zwykle nie pozwala
+# zejsc glebiej niz ~1000 wynikow (page*size). Gdy total_hits przekracza ten
+# prog, pojedyncze zapytanie NIE zdola pobrac wszystkiego - trzeba podzielic
+# okres na mniejsze przedzialy (patrz pobierz_wszystko_z_okresu -> auto-split).
+MAKS_GLEBOKOSC_MF = 1000
 PDF_API_URL   = "https://eureka.mf.gov.pl/api/public/v1/informacje/{id}/eksport/pdf"
 # ► NOWE: endpoint HTML (lżejszy niż PDF, bez renderowania)
 HTML_API_URL  = "https://eureka.mf.gov.pl/informacje/podglad/{id}"
@@ -425,18 +433,33 @@ def _mapuj_dokument(d, nazwa_podatku):
         "data":      str(d.get('DT_WYD', '')).split('T')[0]
     }
 
-def pobierz_wszystko_z_okresu(data_start_str, data_koniec_str, sesja, nazwa_podatku, kod_przepisu):
+def _pobierz_jedno_okno(data_start_str, data_koniec_str, sesja, nazwa_podatku,
+                        kod_przepisu, log_fn=None):
     """
-    kod_przepisu: numeryczny ID aktu prawnego z KODY_PRZEPISOW (np. 29903 dla PIT).
-    To jest PRAWDZIWY filtr uzywany przez API - identyczny z tym, czego
-    uzywa strona eureka.mf.gov.pl przy wyszukiwaniu.
+    Pobiera WSZYSTKIE strony dla JEDNEGO przedzialu dat, bez dzielenia.
+    Zwraca (dokumenty, status, total_hits).
+
+    Statusy:
+      "OK"                – pobrano tyle, ile API zadeklarowalo w totalHits
+      "NIEPELNE_POBRANIE" – API zwrocilo mniej niz totalHits (pusta strona
+                            w srodku / throttling / cichy blad)
+      "LIMIT_GLEBOKOSCI"  – totalHits > MAKS_GLEBOKOSC_MF: pojedyncze okno
+                            nie jest w stanie pobrac wszystkiego, wywolujacy
+                            musi podzielic okres
+      "ERROR"             – twardy blad API
     """
+    def _log(msg):
+        if log_fn:
+            log_fn(msg)
+
     dokumenty  = []
     page       = 0
     total_hits = None
+    puste_z_rzedu = 0
+    MAKS_PUSTYCH_Z_RZEDU = 2   # pusta strona ponawiana zanim uznamy ja za koniec
 
     while True:
-        url     = SEARCH_API_URL_BASE.format(page=page)
+        url     = SEARCH_API_URL_BASE.format(size=ROZMIAR_STRONY, page=page)
         payload = {
             "query": "",
             "filter": {
@@ -453,35 +476,139 @@ def pobierz_wszystko_z_okresu(data_start_str, data_koniec_str, sesja, nazwa_poda
         }
         wyniki, status, total_hits_strona = _wykonaj_zapytanie_api(sesja, url, payload, timeout=15)
         if status == "ERROR":
-            return dokumenty, "ERROR"
+            _log(f"    [strona {page}] BLAD API — przerywam okno.")
+            return dokumenty, "ERROR", total_hits
 
         if total_hits is None and total_hits_strona is not None:
             total_hits = total_hits_strona
+            _log(f"    API zglasza total_hits={total_hits} dla okna {data_start_str}..{data_koniec_str}")
+            # Jesli MF deklaruje wiecej niz zdolamy przewinac - sygnalizuj od razu
+            if total_hits > MAKS_GLEBOKOSC_MF:
+                _log(f"    total_hits={total_hits} > limit glebokosci {MAKS_GLEBOKOSC_MF} — okno wymaga podzialu.")
+                return dokumenty, "LIMIT_GLEBOKOSCI", total_hits
 
+        przed = len(dokumenty)
         for d in wyniki:
             dok = _mapuj_dokument(d, nazwa_podatku)
             if dok:
                 dokumenty.append(dok)
+        dodano = len(dokumenty) - przed
+        _log(f"    [strona {page}] pobrano {len(wyniki)} rekordow "
+             f"(lacznie {len(dokumenty)}"
+             + (f"/{total_hits}" if total_hits is not None else "") + ")")
 
-        # Precyzyjny warunek konca paginacji: znamy totalHits z odpowiedzi API
-        if total_hits is not None:
-            if len(dokumenty) >= total_hits or not wyniki:
-                break
+        # ── Warunek konca: osiagnelismy zadeklarowany total ──
+        if total_hits is not None and len(dokumenty) >= total_hits:
+            break
+
+        # ── Pusta strona: NIE ufamy jej od razu, ponawiamy ──
+        if not wyniki:
+            puste_z_rzedu += 1
+            if total_hits is not None and len(dokumenty) < total_hits and puste_z_rzedu <= MAKS_PUSTYCH_Z_RZEDU:
+                # API zglosilo wiecej niz mamy, a oddalo pusta strone -
+                # prawdopodobnie throttling. Czekamy dluzej i ponawiamy TE SAMA strone.
+                _log(f"    [strona {page}] PUSTA mimo brakujacych {total_hits - len(dokumenty)} "
+                     f"dok. — ponawiam ({puste_z_rzedu}/{MAKS_PUSTYCH_Z_RZEDU}) po pauzie...")
+                time.sleep(6 * puste_z_rzedu)
+                continue
+            # Albo nie znamy total (fallback), albo wyczerpalismy ponowienia:
+            break
         else:
-            # Fallback gdyby API nie zwrocilo totalHits w tej odpowiedzi
-            if len(wyniki) < 25:
-                break
+            puste_z_rzedu = 0
+
+        # Fallback gdy API nie zwraca totalHits: krotka strona = koniec
+        if total_hits is None and len(wyniki) < ROZMIAR_STRONY:
+            break
 
         page += 1
         time.sleep(0.2)
 
-    if total_hits is not None and len(dokumenty) != total_hits:
-        # Niezgodnosc miedzy zadeklarowanym total a faktycznie pobranymi -
-        # nie ukrywamy tego cicho, zwracamy specjalny status zeby wywolujacy
-        # mogl to zalogowac/ostrzec
-        return dokumenty, "NIEPELNE_POBRANIE"
+    if total_hits is not None and len(dokumenty) < total_hits:
+        return dokumenty, "NIEPELNE_POBRANIE", total_hits
+    return dokumenty, "OK", total_hits
 
-    return dokumenty, "OK"
+
+def _podziel_okres(data_start_str, data_koniec_str):
+    """
+    Dzieli przedzial [start, koniec] na dwie mniej wiecej rowne polowy (po dacie).
+    Zwraca liste [(start1, koniec1), (start2, koniec2)] lub [] gdy przedzial
+    jest juz 1-dniowy (nie da sie podzielic).
+    """
+    d0 = datetime.strptime(data_start_str, "%Y-%m-%d")
+    d1 = datetime.strptime(data_koniec_str, "%Y-%m-%d")
+    if d0 >= d1:
+        return []
+    from datetime import timedelta
+    srodek = d0 + (d1 - d0) / 2
+    srodek = datetime(srodek.year, srodek.month, srodek.day)
+    if srodek <= d0:
+        srodek = d0
+    # koniec pierwszej polowy = srodek; poczatek drugiej = srodek + 1 dzien
+    kon1 = srodek.strftime("%Y-%m-%d")
+    st2  = (srodek + timedelta(days=1)).strftime("%Y-%m-%d")
+    if st2 > data_koniec_str:
+        return []
+    return [(data_start_str, kon1), (st2, data_koniec_str)]
+
+
+def pobierz_wszystko_z_okresu(data_start_str, data_koniec_str, sesja, nazwa_podatku,
+                              kod_przepisu, log_fn=None, _poziom=0):
+    """
+    kod_przepisu: numeryczny ID aktu prawnego z KODY_PRZEPISOW (np. 29903 dla PIT).
+    To jest PRAWDZIWY filtr uzywany przez API - identyczny z tym, czego
+    uzywa strona eureka.mf.gov.pl przy wyszukiwaniu.
+
+    Pobiera cala liste dokumentow dla okresu. Jesli MF zglasza wiecej wynikow
+    niz da sie przewinac (limit glebokosci paginacji), AUTOMATYCZNIE dzieli
+    okres na mniejsze przedzialy i scala wyniki (z deduplikacja po id).
+    Dzieki temu duze okna (np. caly miesiac VAT) nie sa juz ucinane.
+
+    log_fn: opcjonalna funkcja logujaca (np. print albo callback Streamlit).
+    Zwraca (dokumenty, status: "OK"|"NIEPELNE_POBRANIE"|"ERROR").
+    """
+    def _log(msg):
+        if log_fn:
+            log_fn(msg)
+
+    wciecie = "  " * _poziom
+    _log(f"{wciecie}[{nazwa_podatku}] Okno {data_start_str}..{data_koniec_str}")
+
+    dokumenty, status, total_hits = _pobierz_jedno_okno(
+        data_start_str, data_koniec_str, sesja, nazwa_podatku, kod_przepisu, log_fn=_log
+    )
+
+    # ── Okno miesci sie w limicie i pobralo komplet ──
+    if status == "OK":
+        return dokumenty, "OK"
+
+    # ── Limit glebokosci LUB niepelne pobranie: sprobuj podzielic okres ──
+    if status in ("LIMIT_GLEBOKOSCI", "NIEPELNE_POBRANIE"):
+        podokresy = _podziel_okres(data_start_str, data_koniec_str)
+        if podokresy and _poziom < 6:
+            _log(f"{wciecie}[{nazwa_podatku}] Status {status} — dziele okno na "
+                 f"{len(podokresy)} czesci i pobieram osobno.")
+            scalone = {d["id"]: d for d in dokumenty}   # zachowaj to, co juz mamy
+            czy_blad = False
+            for (s, k) in podokresy:
+                pod_dok, pod_status = pobierz_wszystko_z_okresu(
+                    s, k, sesja, nazwa_podatku, kod_przepisu,
+                    log_fn=log_fn, _poziom=_poziom + 1,
+                )
+                for d in pod_dok:
+                    scalone[d["id"]] = d
+                if pod_status not in ("OK",):
+                    czy_blad = True
+            wynik = list(scalone.values())
+            _log(f"{wciecie}[{nazwa_podatku}] Po podziale: {len(wynik)} unikalnych dokumentow.")
+            return wynik, ("NIEPELNE_POBRANIE" if czy_blad else "OK")
+        else:
+            # Nie da sie juz podzielic (okno 1-dniowe) albo za gleboka rekurencja
+            _log(f"{wciecie}[{nazwa_podatku}] Status {status}, nie moge dalej dzielic "
+                 f"(okno={data_start_str}..{data_koniec_str}). Zwracam {len(dokumenty)} dok.")
+            return dokumenty, "NIEPELNE_POBRANIE"
+
+    # ── Twardy blad ──
+    return dokumenty, "ERROR"
 
 def szukaj_w_api_mf(data_start_str, data_koniec_str, fraza, sesja, nazwa_podatku, kod_przepisu):
     """
