@@ -2,8 +2,6 @@ import streamlit as st
 import time
 
 # Załadowanie wszystkich Twoich odseparowanych plików
-import radar
-import market
 import cfo_analyzer
 import raporty
 import eksplorator_archiwum
@@ -38,12 +36,10 @@ st.sidebar.title("📌 Menu PickPivot")
 aktywna_zakladka = st.sidebar.radio(
     "Wybierz moduł:",
     [
-        "1. Radar Orzecznictwa",
-        "2. Ściągacz Interpretacji",
-        "3. Archiwum Interpretacji",
-        "4. Global Market Scanner",
-        "5. Analiza Wskaźnikowa",
-        "6. Ustawienia Systemu (Wkrótce)"
+        "1. Ściągacz Interpretacji",
+        "2. Archiwum Interpretacji",
+        "3. Analiza Wskaźnikowa",
+        "4. Ustawienia Systemu (Wkrótce)"
     ]
 )
 
@@ -56,14 +52,10 @@ st.sidebar.caption("© 2026 PickPivot Modular Engine")
 
 # 4. System routingu (Przełączanie modułów)
 if aktywna_zakladka.startswith("1."):
-    radar.run_module()
-elif aktywna_zakladka.startswith("2."):
     raporty.run_module()
-elif aktywna_zakladka.startswith("3."):
+elif aktywna_zakladka.startswith("2."):
     eksplorator_archiwum.run_module()
-elif aktywna_zakladka.startswith("4."):
-    market.run_module()
-elif aktywna_zakladka.startswith("5."):
+elif aktywna_zakladka.startswith("3."):
     cfo_analyzer.run_module()
 else:
     # Obsługa zakładek, które są dopiero w planach
