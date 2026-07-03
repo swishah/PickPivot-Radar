@@ -2,9 +2,9 @@
 raport_silnik.py — Wspolna logika generowania raportu dla DOWOLNEGO zakresu dat i podatku.
 
 Uzywany przez:
-  - raport_tygodniowy.py    (cron, caly tydzien, wszystkie podatki)
-  - raport_na_zadanie.py    (GitHub Actions workflow_dispatch, jeden rok/miesiac/podatek)
-  - raporty.py               (Streamlit, generowanie "na zywo" w aplikacji)
+  - raport_na_zadanie.py     (GitHub Actions, jeden rok/miesiac/podatek)
+  - synchronizacja_dzienna.py (GitHub Actions cron 3:00, okno 3-dniowe)
+  - raporty.py                (Streamlit, generowanie "na zywo" w aplikacji)
 
 Nie zalezy od Streamlit ani od GitHub Actions - czysta logika biznesowa.
 """
@@ -24,6 +24,11 @@ import utils
 
 
 PODATKI_WSZYSTKIE = ["PIT", "CIT", "VAT", "AKCYZA"]
+
+# Pauza bazowa miedzy kolejnymi probami douzupelnienia (mnozym przez numer proby).
+# Daje zablokowanemu IP czas na odblokowanie po stronie MF. 90s * numer proby:
+# proba 2 -> 180s, proba 3 -> 270s, proba 4 -> 360s.
+PAUZA_MIEDZY_DOUZUPELNIENIAMI_S = 90
 
 
 # ---------------------------------------------------------------------------
@@ -106,24 +111,31 @@ def uzupelnij_archiwum(
         if completed % 10 == 0 or completed == total:
             log_fn(f"[{podatek}] Postep pobierania tresci: {completed}/{total}")
 
-    nowe_tresci, _, _, blokada = utils.pobierz_dokumenty_rownolegle(
+    nowe_tresci, _, uszkodzone, blokada, do_ponowienia = utils.pobierz_dokumenty_rownolegle(
         do_pobrania, znane_id, set(),
-        callback_postep=on_postep, workers=workers,
+        callback_postep=on_postep, workers=workers, log_fn=log_fn,
     )
 
-    if blokada:
+    if nowe_tresci:
+        zapisanych = db_core.zapisz_wiele_do_archiwum(db, nowe_tresci, "raport_na_zadanie")
+        log_fn(f"[{podatek}] Zapisano {zapisanych} nowych dokumentow.")
+    else:
+        zapisanych = 0
+
+    # Status koncowy — priorytetyzacja sygnalow dla warstwy zadania:
+    #  BLOKADA          -> sa dokumenty do ponowienia przez blokade IP (warto ponowic cale zadanie)
+    #  NIEPELNE_POBRANIE-> lista z API byla niepelna LUB sa inne dokumenty do ponowienia
+    #  OK               -> pobrano wszystko, co dalo sie pobrac
+    if blokada or do_ponowienia:
+        log_fn(f"[{podatek}] {len(do_ponowienia)} dokumentow nie pobrano (blokada/timeout) — "
+               f"zostana ponowione.")
         status_koncowy = "BLOKADA"
     elif status == "NIEPELNE_POBRANIE":
         status_koncowy = "NIEPELNE_POBRANIE"
     else:
         status_koncowy = "OK"
 
-    if nowe_tresci:
-        zapisanych = db_core.zapisz_wiele_do_archiwum(db, nowe_tresci, "raport_na_zadanie")
-        log_fn(f"[{podatek}] Zapisano {zapisanych} nowych dokumentow.")
-        return zapisanych, status_koncowy
-
-    return 0, status_koncowy
+    return zapisanych, status_koncowy
 
 
 # ---------------------------------------------------------------------------
@@ -223,6 +235,7 @@ def generuj_raport_dla_podatku(
     log_fn=print,
     weryfikuj: bool = True,
     generuj_plik: bool = True,
+    maks_prob_douzupelnienia: int = 4,
 ) -> dict:
     """
     Pelny przebieg dla JEDNEGO podatku: uzupelnia archiwum, weryfikuje
@@ -264,23 +277,51 @@ def generuj_raport_dla_podatku(
                 podatek, data_od, data_do, len(rekordy), log_fn=log_fn
             )
 
-            # Jesli wykryto niezgodnosc - sprobuj DOCIAGNAC brakujace dokumenty
-            # zanim wygenerujemy finalny plik (samoleczace zachowanie)
-            if wynik_weryfikacji["status"] == "NIEZGODNOSC" and wynik_weryfikacji["roznica"] > 0:
-                log_fn(f"[{podatek}] Wykryto brakujace dokumenty — proba douzupelnienia archiwum...")
+            # ── SAMOLECZENIE Z BACKOFFEM ────────────────────────────────────
+            # Przy blokadzie IP MF jedno natychmiastowe douzupelnienie nie
+            # pomoze (IP nadal zablokowane). Dlatego ponawiamy w PETLI z PAUZA,
+            # dopoki roznica MALEJE. Gdy roznica przestaje spadac, to znak, ze
+            # pozostale dokumenty nie istnieja w pobieralnej formie (skany bez
+            # tekstu) - nie ma sensu ponawiac w nieskonczonosc.
+            proba_douz = 0
+            while (wynik_weryfikacji["status"] == "NIEZGODNOSC"
+                   and wynik_weryfikacji["roznica"] > 0
+                   and proba_douz < maks_prob_douzupelnienia):
+                proba_douz += 1
+                roznica_przed = wynik_weryfikacji["roznica"]
+
+                # Pauza rosnaca z kazda proba - daje IP szanse na odblokowanie.
+                # Pierwsza proba bez pauzy (moze to byl chwilowy timeout).
+                if proba_douz > 1:
+                    pauza = PAUZA_MIEDZY_DOUZUPELNIENIAMI_S * proba_douz
+                    log_fn(f"[{podatek}] Proba douzupelnienia {proba_douz}/{maks_prob_douzupelnienia} — "
+                           f"czekam {pauza}s (odblokowanie IP), potem ponawiam...")
+                    time.sleep(pauza)
+                else:
+                    log_fn(f"[{podatek}] Wykryto {roznica_przed} brakujacych — "
+                           f"proba douzupelnienia {proba_douz}/{maks_prob_douzupelnienia}...")
+
                 nowych_dodatkowo, _ = uzupelnij_archiwum(db, podatek, data_od, data_do, log_fn=log_fn)
                 nowych += nowych_dodatkowo
 
-                if nowych_dodatkowo > 0:
-                    rekordy = db_core.pobierz_rekordy_z_archiwum(
-                        db, podatek=podatek,
-                        data_od=data_od.strftime("%Y-%m-%d"),
-                        data_do=data_do.strftime("%Y-%m-%d"),
-                    )
-                    # Ponowna weryfikacja po douzupelnieniu
-                    wynik_weryfikacji = weryfikuj_kompletnosc(
-                        podatek, data_od, data_do, len(rekordy), log_fn=log_fn, max_prob=2
-                    )
+                rekordy = db_core.pobierz_rekordy_z_archiwum(
+                    db, podatek=podatek,
+                    data_od=data_od.strftime("%Y-%m-%d"),
+                    data_do=data_do.strftime("%Y-%m-%d"),
+                )
+                wynik_weryfikacji = weryfikuj_kompletnosc(
+                    podatek, data_od, data_do, len(rekordy), log_fn=log_fn, max_prob=2
+                )
+
+                # Warunek stopu: roznica przestala malec (utknelismy na
+                # dokumentach bez pobieralnej tresci) - dalsze proby nic nie dadza.
+                if wynik_weryfikacji["status"] != "NIEZGODNOSC":
+                    break
+                if wynik_weryfikacji["roznica"] >= roznica_przed:
+                    log_fn(f"[{podatek}] Roznica nie zmalala ({roznica_przed} -> "
+                           f"{wynik_weryfikacji['roznica']}) — pozostale dokumenty prawdopodobnie "
+                           f"nie maja pobieralnej tresci. Koncze douzupelnianie.")
+                    break
 
         plik_bytes = None
         if generuj_plik:
