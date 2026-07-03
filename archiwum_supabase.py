@@ -118,27 +118,6 @@ def rozklad_miesieczny(podatek: str = None) -> list:
 
 
 # ---------------------------------------------------------------------------
-# RAPORTY TYGODNIOWE (Modul 5)
-# ---------------------------------------------------------------------------
-def pobierz_liste_raportow() -> list:
-    db = _get_db()
-    try:
-        return db_core.pobierz_liste_raportow(db)
-    except Exception as e:
-        st.warning(f"Blad odczytu listy raportow: {e}")
-        return []
-
-
-def pobierz_plik_raportu(raport_id: int):
-    db = _get_db()
-    try:
-        return db_core.pobierz_plik_raportu(db, raport_id)
-    except Exception as e:
-        st.warning(f"Blad pobierania pliku: {e}")
-        return None, None
-
-
-# ---------------------------------------------------------------------------
 # HISTORIA RAPORTOW NA ZADANIE (status + weryfikacja)
 # ---------------------------------------------------------------------------
 def pobierz_historie_raportow(limit: int = 30) -> list:
