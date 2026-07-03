@@ -164,6 +164,21 @@ SCHEMA_SQL = [
         szczegoly     TEXT DEFAULT ''        -- np. "MF: 45, archiwum: 43 (różnica: -2)"
     )""",
     "CREATE INDEX IF NOT EXISTS idx_h1 ON historia_raportow_na_zadanie(uruchomiono)",
+
+    # ── NOWA TABELA: historia codziennej synchronizacji automatycznej (3:00) ──
+    """CREATE TABLE IF NOT EXISTS historia_synchronizacji (
+        id            SERIAL PRIMARY KEY,
+        uruchomiono   TEXT NOT NULL,        -- timestamp ISO
+        data_od       TEXT NOT NULL,        -- poczatek okna 3-dniowego YYYY-MM-DD
+        data_do       TEXT NOT NULL,        -- koniec okna YYYY-MM-DD
+        podatek       TEXT NOT NULL,
+        liczba_dok    INTEGER DEFAULT 0,    -- lacznie w bazie dla tego okna
+        nowych_dok    INTEGER DEFAULT 0,    -- ile nowych dodano w tym przebiegu
+        liczba_prob   INTEGER DEFAULT 1,
+        status        TEXT NOT NULL,        -- OK / NIEZGODNOSC / WERYFIKACJA_NIEUDANA / ERROR
+        szczegoly     TEXT DEFAULT ''
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_s1 ON historia_synchronizacji(uruchomiono)",
 ]
 
 
@@ -239,6 +254,44 @@ def statystyki_archiwum(db: SupabaseDB) -> dict:
     ost = str(r["ostatnie"])[:10] if r["ostatnie"] else "—"
     return {"total": r["total"], "per_podatek": per, "ostatnie_pobranie": ost,
             "ukonczone_kombinacje": r["ukonczone"], "polaczenie": True}
+
+
+def statystyki_szczegolowe(db: SupabaseDB) -> dict:
+    """
+    Rozszerzone statystyki dla modulu Archiwum: liczba dokumentow oraz
+    zakres dat wydania (najstarsza/najnowsza interpretacja) per podatek.
+    Odpowiada na pytanie "ile jest interpretacji, z kiedy i z jakiego podatku".
+    """
+    rows = db.wykonaj(
+        """SELECT podatek, COUNT(*) AS liczba,
+                  MIN(data_wyd) AS najstarsza, MAX(data_wyd) AS najnowsza
+           FROM dokumenty
+           GROUP BY podatek
+           ORDER BY liczba DESC""",
+        fetch=True
+    )
+    total = sum(r["liczba"] for r in rows) if rows else 0
+    return {"total": total, "per_podatek": rows}
+
+
+def rozklad_miesieczny(db: SupabaseDB, podatek: str = None) -> list:
+    """
+    Zwraca liczbe dokumentow pogrupowana wg rok-miesiac (i opcjonalnie
+    dodatkowo wg podatku, jesli podatek=None). Uzywane do tabeli/wykresu
+    rozkladu w czasie w module Archiwum.
+    """
+    kl, pa = [], []
+    if podatek:
+        kl.append("podatek = %s")
+        pa.append(podatek)
+    where = f"WHERE {' AND '.join(kl)}" if kl else ""
+    return db.wykonaj(
+        f"""SELECT podatek, LEFT(data_wyd, 7) AS rok_miesiac, COUNT(*) AS liczba
+            FROM dokumenty {where}
+            GROUP BY podatek, LEFT(data_wyd, 7)
+            ORDER BY rok_miesiac DESC, podatek""",
+        pa if pa else None, fetch=True
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -336,6 +389,39 @@ def pobierz_historie_raportow(db: SupabaseDB, limit: int = 30) -> list:
     """Zwraca ostatnie N wpisow historii, najnowsze pierwsze."""
     return db.wykonaj(
         """SELECT * FROM historia_raportow_na_zadanie
+           ORDER BY uruchomiono DESC LIMIT %s""",
+        (limit,), fetch=True
+    )
+
+
+# ---------------------------------------------------------------------------
+# HISTORIA SYNCHRONIZACJI DZIENNEJ — automatyczny job o 3:00
+# ---------------------------------------------------------------------------
+def zapisz_historie_synchronizacji(
+    db: SupabaseDB,
+    data_od: str,
+    data_do: str,
+    podatek: str,
+    liczba_dok: int,
+    nowych_dok: int,
+    liczba_prob: int,
+    status: str,
+    szczegoly: str = "",
+):
+    """Zapisuje jeden wpis historii po zakonczeniu codziennej synchronizacji."""
+    db.wykonaj(
+        """INSERT INTO historia_synchronizacji
+            (uruchomiono, data_od, data_do, podatek, liczba_dok, nowych_dok, liczba_prob, status, szczegoly)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+        (datetime.now().isoformat(timespec="seconds"), data_od, data_do, podatek,
+         liczba_dok, nowych_dok, liczba_prob, status, szczegoly)
+    )
+
+
+def pobierz_historie_synchronizacji(db: SupabaseDB, limit: int = 30) -> list:
+    """Zwraca ostatnie N wpisow historii synchronizacji, najnowsze pierwsze."""
+    return db.wykonaj(
+        """SELECT * FROM historia_synchronizacji
            ORDER BY uruchomiono DESC LIMIT %s""",
         (limit,), fetch=True
     )

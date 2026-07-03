@@ -1,15 +1,21 @@
 """
 raporty.py — Modul 2: Sciagacz Interpretacji.
 
-Dwie sekcje:
-  1. Raporty automatyczne (cotygodniowe, generowane przez cron w GitHub Actions)
-     - NIEZMIENIONE: nadal generuja i przechowuja gotowe pliki Word.
-  2. Pobieranie na zadanie (rok/miesiac/podatek wybrany recznie) - dwa tryby:
+Zawiera:
+  1. Pobieranie na zadanie (rok/miesiac/podatek wybrany recznie) - dwa tryby:
      a) "Pobierz teraz" - liczy sie w samej aplikacji Streamlit (czekasz na wynik)
      b) "Pobierz w tle" - wysyla zadanie do GitHub Actions (mozesz zamknac przegladarke)
-     W obu trybach: interpretacje trafiaja do bazy danych, NIE generuje sie
-     scalonego pliku Word - po zakonczeniu wysylane jest powiadomienie mailowe
-     z podsumowaniem (liczba dokumentow, status weryfikacji).
+     W obu trybach: interpretacje trafiaja do bazy danych, powiadomienie
+     mailowe (bez zalacznika) informuje o wyniku.
+  2. Historia pobran na zadanie.
+  3. Historia synchronizacji dziennej (automatyczny job o 3:00, patrz
+     synchronizacja_dzienna.py) - widoczna tutaj tylko do wgladu, nie da
+     sie jej uruchomic recznie z poziomu aplikacji (dziala niezaleznie
+     w GitHub Actions co noc).
+
+UWAGA: mechanizm generowania zbiorczych plikow Word ("Raporty automatyczne")
+zostal calkowicie usuniety. Baza danych jest teraz jedynym celem
+pobierania - nic juz nie generuje dokumentow do pobrania z tego modulu.
 """
 
 import streamlit as st
@@ -31,79 +37,8 @@ def _wykryj_archiwum():
     return None
 
 
-def _formatuj_okres(data_od: str, data_do: str) -> str:
-    try:
-        d1 = datetime.strptime(data_od, "%Y-%m-%d")
-        d2 = datetime.strptime(data_do, "%Y-%m-%d")
-        return f"{d1.strftime('%d.%m')} — {d2.strftime('%d.%m.%Y')}"
-    except Exception:
-        return f"{data_od} — {data_do}"
-
-
 # =============================================================================
-# SEKCJA 1: RAPORTY AUTOMATYCZNE (TYGODNIOWE) — bez zmian
-# =============================================================================
-def _renderuj_raporty_automatyczne(arch):
-    st.markdown("### 📅 Raporty automatyczne (cotygodniowe)")
-    st.caption(
-        "Co weekend (sobota-poniedzialek) system automatycznie pobiera nowe "
-        "interpretacje z mijajacego tygodnia i przygotowuje gotowe pliki Word."
-    )
-
-    with st.spinner("Wczytuje liste raportow..."):
-        try:
-            raporty = arch.pobierz_liste_raportow()
-        except Exception as e:
-            st.error(f"Blad pobierania listy raportow: {e}")
-            return
-
-    if not raporty:
-        st.info(
-            "Brak wygenerowanych raportow automatycznych. Pierwszy pojawi sie "
-            "w najblizszy weekend (sobota 15:00 — poniedzialek 02:00)."
-        )
-        return
-
-    tygodnie = {}
-    for r in raporty:
-        tygodnie.setdefault(r["tydzien_klucz"], []).append(r)
-    klucze_posortowane = sorted(tygodnie.keys(), reverse=True)
-
-    st.markdown(f"**Dostepne raporty:** {len(klucze_posortowane)} tygodni")
-
-    for klucz_tyg in klucze_posortowane:
-        raporty_tyg = tygodnie[klucz_tyg]
-        okres = _formatuj_okres(raporty_tyg[0]["data_od"], raporty_tyg[0]["data_do"])
-        suma_dok = sum(r["liczba_dok"] for r in raporty_tyg)
-
-        with st.expander(f"📅 Tydzien {klucz_tyg} ({okres}) — {suma_dok} dokumentow", expanded=(klucz_tyg == klucze_posortowane[0])):
-            cols = st.columns(len(raporty_tyg) if raporty_tyg else 1)
-            for i, r in enumerate(sorted(raporty_tyg, key=lambda x: x["podatek"])):
-                with cols[i % len(cols)]:
-                    st.metric(r["podatek"], f"{r['liczba_dok']} dok.")
-                    if r["liczba_dok"] > 0:
-                        klucz_btn = f"pobierz_auto_{r['id']}"
-                        if st.button(f"Pobierz {r['podatek']}", key=klucz_btn, use_container_width=True):
-                            with st.spinner("Wczytuje plik..."):
-                                plik_bytes, nazwa_pliku = arch.pobierz_plik_raportu(r["id"])
-                            if plik_bytes:
-                                st.session_state[f"plik_gotowy_{r['id']}"] = (plik_bytes, nazwa_pliku)
-                            else:
-                                st.error("Nie udalo sie wczytac pliku.")
-                        if f"plik_gotowy_{r['id']}" in st.session_state:
-                            plik_bytes, nazwa_pliku = st.session_state[f"plik_gotowy_{r['id']}"]
-                            st.download_button(
-                                "💾 Zapisz na dysk", data=plik_bytes, file_name=nazwa_pliku,
-                                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                                key=f"dl_auto_{r['id']}", use_container_width=True,
-                            )
-                    else:
-                        st.caption("Brak dokumentow")
-            st.caption(f"Wygenerowano: {raporty_tyg[0]['wygenerowano'][:16].replace('T',' ')}")
-
-
-# =============================================================================
-# SEKCJA 2: POBIERANIE NA ZADANIE (bez generowania pliku Word)
+# POBIERANIE NA ZADANIE (bez generowania pliku Word)
 # =============================================================================
 def _wyslij_github_dispatch(rok: int, miesiac: int, podatek: str) -> tuple:
     """
@@ -336,23 +271,15 @@ repo = "twoj-login/nazwa-repo"
 ```
                     """)
 
-    st.markdown("---")
-    _renderuj_historie_pobran()
-
 
 # =============================================================================
-# HISTORIA POBRAN — widoczna w aplikacji, oba tryby ("teraz" i "w tle")
+# HISTORIA POBRAN NA ZADANIE — oba tryby ("teraz" i "w tle")
 # =============================================================================
 def _renderuj_historie_pobran():
-    """
-    Pokazuje ostatnie uruchomienia pobierania na zadanie (oba tryby - zywy
-    i w tle, oba zapisuja wpis do bazy) z wyraznym statusem weryfikacji
-    kompletnosci.
-    """
-    st.markdown('### 📋 Historia pobrań')
+    st.markdown('### 📋 Historia pobrań na żądanie')
     st.caption(
-        "Status każdego pobrania — z informacją czy kompletność została "
-        "potwierdzona drugą weryfikacją względem API Ministerstwa Finansów."
+        "Status każdego ręcznego pobrania — z informacją czy kompletność "
+        "została potwierdzona drugą weryfikacją względem API Ministerstwa Finansów."
     )
 
     arch = _wykryj_archiwum()
@@ -364,7 +291,7 @@ def _renderuj_historie_pobran():
 
     if "historia_raportow_cache" not in st.session_state:
         with st.spinner("Wczytuję historię..."):
-            st.session_state["historia_raportow_cache"] = arch.pobierz_historie_raportow(limit=30)
+            st.session_state["historia_raportow_cache"] = arch.pobierz_historie_raportow(limit=20)
 
     historia = st.session_state["historia_raportow_cache"]
 
@@ -372,9 +299,49 @@ def _renderuj_historie_pobran():
         st.info('Brak historii — uruchom pierwsze pobieranie na żądanie, żeby pojawił się tutaj wpis.')
         return
 
-    miesiace_pl = ["Styczen","Luty","Marzec","Kwiecien","Maj","Czerwiec",
-                   "Lipiec","Sierpien","Wrzesien","Pazdziernik","Listopad","Grudzien"]
+    _tabela_historii(historia, pokaz_nowe=False)
 
+
+# =============================================================================
+# HISTORIA SYNCHRONIZACJI DZIENNEJ — automatyczny job o 3:00 (tylko podglad)
+# =============================================================================
+def _renderuj_historie_synchronizacji():
+    st.markdown('### 🌙 Historia synchronizacji dziennej (automatyczna, 3:00)')
+    st.caption(
+        "Codziennie o 3:00 system samodzielnie sprawdza ostatnie 3 dni dla "
+        "wszystkich czterech podatków i dociąga nowe interpretacje do bazy. "
+        "Ten job działa niezależnie w tle (GitHub Actions) — poniżej tylko "
+        "podgląd wyników, nie da się go uruchomić ręcznie z tego miejsca."
+    )
+
+    arch = _wykryj_archiwum()
+    if arch is None:
+        return
+
+    if st.button("🔄 Odśwież historię synchronizacji", key="odswiez_sync"):
+        st.session_state.pop("historia_sync_cache", None)
+
+    if "historia_sync_cache" not in st.session_state:
+        with st.spinner("Wczytuję historię synchronizacji..."):
+            st.session_state["historia_sync_cache"] = arch.pobierz_historie_synchronizacji(limit=40)
+
+    historia = st.session_state["historia_sync_cache"]
+
+    if not historia:
+        st.info(
+            "Brak historii synchronizacji jeszcze. Pierwszy wpis pojawi się "
+            "po pierwszym nocnym uruchomieniu (3:00) lub po ręcznym teście "
+            "przez zakładkę Actions w GitHub."
+        )
+        return
+
+    _tabela_historii(historia, pokaz_nowe=True)
+
+
+# =============================================================================
+# WSPOLNA TABELA HISTORII (uzywana przez obie sekcje powyzej)
+# =============================================================================
+def _tabela_historii(historia: list, pokaz_nowe: bool):
     ikony_statusu = {
         "OK": "✅",
         "NIEZGODNOSC": "⚠️",
@@ -387,27 +354,51 @@ def _renderuj_historie_pobran():
         "WERYFIKACJA_NIEUDANA": "Niepotwierdzone (MF niedostępne)",
         "ERROR": "Błąd pobierania",
     }
+    miesiace_pl = ["Styczen","Luty","Marzec","Kwiecien","Maj","Czerwiec",
+                   "Lipiec","Sierpien","Wrzesien","Pazdziernik","Listopad","Grudzien"]
 
     for wpis in historia:
         ikona = ikony_statusu.get(wpis["status"], "❔")
         opis_status = opisy_statusu.get(wpis["status"], wpis["status"])
-        okres_str = f"{miesiace_pl[wpis['miesiac']-1]} {wpis['rok']}"
         czas_str = wpis["uruchomiono"][:16].replace("T", " ")
 
-        col1, col2, col3, col4 = st.columns([2, 2, 2, 3])
-        with col1:
-            st.write(f"{ikona} **{wpis['podatek']}**")
-        with col2:
-            st.write(okres_str)
-        with col3:
-            st.write(f"{wpis['liczba_dok']} dok.")
-        with col4:
-            tekst_statusu = opis_status
-            if wpis["liczba_prob"] > 1:
-                tekst_statusu += f" (próby: {wpis['liczba_prob']})"
-            st.write(tekst_statusu)
+        # Okres: albo rok/miesiac (historia_raportow_na_zadanie), albo data_od/data_do (sync)
+        if "rok" in wpis and "miesiac" in wpis:
+            okres_str = f"{miesiace_pl[wpis['miesiac']-1]} {wpis['rok']}"
+        else:
+            okres_str = f"{wpis.get('data_od','')} — {wpis.get('data_do','')}"
 
-        if wpis["szczegoly"]:
+        if not pokaz_nowe:
+            col1, col2, col3, col4 = st.columns([2, 2, 2, 3])
+            with col1:
+                st.write(f"{ikona} **{wpis['podatek']}**")
+            with col2:
+                st.write(okres_str)
+            with col3:
+                st.write(f"{wpis['liczba_dok']} dok.")
+            with col4:
+                tekst_statusu = opis_status
+                if wpis.get("liczba_prob", 1) > 1:
+                    tekst_statusu += f" (próby: {wpis['liczba_prob']})"
+                st.write(tekst_statusu)
+        else:
+            col1, col2, col3, col4, col5 = st.columns([2, 2, 1, 1, 3])
+            with col1:
+                st.write(f"{ikona} **{wpis['podatek']}**")
+            with col2:
+                st.write(okres_str)
+            with col3:
+                st.write(f"{wpis['liczba_dok']} łącznie")
+            with col4:
+                nowych = wpis.get("nowych_dok", 0)
+                st.write(f"+{nowych} nowych" if nowych > 0 else "brak nowych")
+            with col5:
+                tekst_statusu = opis_status
+                if wpis.get("liczba_prob", 1) > 1:
+                    tekst_statusu += f" (próby: {wpis['liczba_prob']})"
+                st.write(tekst_statusu)
+
+        if wpis.get("szczegoly"):
             st.caption(f"　　Szczegóły: {wpis['szczegoly']}")
         st.caption(f"　　{czas_str}")
 
@@ -427,10 +418,8 @@ def run_module():
         )
         return
 
-    tab1, tab2 = st.tabs(["📅 Raporty automatyczne", "🎯 Pobieranie na żądanie"])
-
-    with tab1:
-        _renderuj_raporty_automatyczne(arch)
-
-    with tab2:
-        _renderuj_pobieranie_na_zadanie()
+    _renderuj_pobieranie_na_zadanie()
+    st.markdown("---")
+    _renderuj_historie_pobran()
+    st.markdown("---")
+    _renderuj_historie_synchronizacji()

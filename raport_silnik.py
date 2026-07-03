@@ -373,6 +373,97 @@ def wyslij_email_powiadomienie_pobrania(
 
 
 # ---------------------------------------------------------------------------
+# WYSYLKA POWIADOMIENIA — CODZIENNA SYNCHRONIZACJA AUTOMATYCZNA
+# ---------------------------------------------------------------------------
+def wyslij_email_synchronizacja_dzienna(
+    wyniki: list,
+    opis_okresu: str,
+    gmail_adres: str,
+    gmail_haslo: str,
+    odbiorca: str,
+    log_fn=print,
+) -> bool:
+    """
+    Krotkie, codzienne powiadomienie o wyniku automatycznej synchronizacji
+    nocnej (3:00). Wizualnie odrebne od powiadomien "na zadanie", zeby
+    odbiorca od razu widzial w skrzynce ktore maile sa automatyczne.
+
+    wyniki: lista dict z generuj_raport_dla_podatku() (generuj_plik=False)
+    """
+    nowych_lacznie = sum(w.get("nowych_pobranych", 0) for w in wyniki)
+    ma_niezgodnosc = any(
+        w.get("weryfikacja") and w["weryfikacja"]["status"] in ("NIEZGODNOSC", "WERYFIKACJA_NIEUDANA")
+        for w in wyniki
+    )
+    ma_blad = any(w["status"] == "ERROR" for w in wyniki)
+
+    if ma_blad:
+        znacznik = "❌"
+    elif ma_niezgodnosc:
+        znacznik = "⚠️"
+    elif nowych_lacznie > 0:
+        znacznik = "🆕"
+    else:
+        znacznik = "✅"
+
+    temat = f"{znacznik} PickPivot — Synchronizacja dzienna {opis_okresu} ({nowych_lacznie} nowych)"
+
+    def _status_kom(w):
+        wer = w.get("weryfikacja")
+        if w["status"] == "ERROR":
+            return "❌ błąd"
+        if not wer:
+            return "—"
+        mapa = {
+            "OK": "✅ potwierdzona kompletność",
+            "NIEZGODNOSC": f"⚠️ rozbieżność (różnica: {wer['roznica']})",
+            "WERYFIKACJA_NIEUDANA": "ℹ️ niepotwierdzone (MF niedostępne)",
+        }
+        return mapa.get(wer["status"], wer["status"])
+
+    wiersze = "".join(
+        f'<tr><td>{w["podatek"]}</td><td>{w["liczba_dok"]}</td>'
+        f'<td>{w.get("nowych_pobranych", 0)}</td>'
+        f'<td>{_status_kom(w)}</td></tr>'
+        for w in wyniki
+    )
+
+    tresc_html = f"""
+    <html><body style="font-family: Arial, sans-serif;">
+    <h2>🌙 PickPivot — Synchronizacja dzienna (automatyczna, 3:00)</h2>
+    <p><b>Sprawdzony okres:</b> {opis_okresu} (ruchome okno 3 dni)</p>
+    <table border="1" cellpadding="8" cellspacing="0" style="border-collapse: collapse;">
+        <tr style="background-color: #2C3E50; color: white;">
+            <th>Podatek</th><th>Łącznie w bazie (ten okres)</th><th>Nowo pobranych dziś</th><th>Weryfikacja</th>
+        </tr>
+        {wiersze}
+    </table>
+    <p style="color: #888; font-size: 12px; margin-top: 20px;">
+        Wiadomość wygenerowana automatycznie o 3:00 przez PickPivot — Ściągacz Interpretacji
+        (codzienna synchronizacja, GitHub Actions).
+    </p>
+    </body></html>
+    """
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = temat
+    msg["From"]    = gmail_adres
+    msg["To"]      = odbiorca
+    msg.attach(MIMEText(tresc_html, "html", "utf-8"))
+
+    try:
+        with smtplib.SMTP("smtp.gmail.com", 587) as server:
+            server.starttls()
+            server.login(gmail_adres, gmail_haslo)
+            server.send_message(msg)
+        log_fn(f"E-mail synchronizacji dziennej wysłany do {odbiorca}.")
+        return True
+    except Exception as e:
+        log_fn(f"BŁĄD wysyłki email: {e}")
+        return False
+
+
+# ---------------------------------------------------------------------------
 # WYSYLKA EMAIL Z ZALACZNIKIEM
 # ---------------------------------------------------------------------------
 def wyslij_email_z_zalacznikiem(
@@ -584,4 +675,24 @@ def zakres_z_roku_miesiaca(rok: int, miesiac: int) -> tuple:
     miesiace_pl = ["Styczen","Luty","Marzec","Kwiecien","Maj","Czerwiec",
                    "Lipiec","Sierpien","Wrzesien","Pazdziernik","Listopad","Grudzien"]
     opis = f"{miesiace_pl[miesiac-1]} {rok}"
+    return data_od, data_do, opis
+
+
+def zakres_3_dni() -> tuple:
+    """
+    Zwraca (data_od, data_do, opis_okresu) dla ruchomego okna 3 dni
+    konczacego sie dzisiaj (dzisiaj, wczoraj, przedwczoraj).
+
+    Uzywane przez codzienna synchronizacje - kazdy dzien jest sprawdzany
+    3-krotnie w kolejnych uruchomieniach (jako "dzisiaj", potem "wczoraj",
+    potem "przedwczoraj"), co daje odpornosc na interpretacje publikowane
+    przez MF z data wsteczna. Duplikaty sa pomijane automatycznie przy
+    zapisie (ON CONFLICT DO NOTHING), wiec powtorne sprawdzanie tych samych
+    dni jest bezpieczne i nie generuje zduplikowanych rekordow.
+    """
+    from datetime import timedelta
+    dzisiaj = datetime.now()
+    data_od = dzisiaj - timedelta(days=2)
+    data_do = dzisiaj
+    opis = f"{data_od.strftime('%d.%m')} — {data_do.strftime('%d.%m.%Y')}"
     return data_od, data_do, opis

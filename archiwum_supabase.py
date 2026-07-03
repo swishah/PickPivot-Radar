@@ -99,6 +99,24 @@ def statystyki_archiwum() -> dict:
                 "ukonczone_kombinacje": 0, "polaczenie": False}
 
 
+def statystyki_szczegolowe() -> dict:
+    db = _get_db()
+    try:
+        return db_core.statystyki_szczegolowe(db)
+    except Exception as e:
+        st.warning(f"Blad pobierania statystyk: {e}")
+        return {"total": 0, "per_podatek": []}
+
+
+def rozklad_miesieczny(podatek: str = None) -> list:
+    db = _get_db()
+    try:
+        return db_core.rozklad_miesieczny(db, podatek=podatek)
+    except Exception as e:
+        st.warning(f"Blad pobierania rozkladu miesiecznego: {e}")
+        return []
+
+
 # ---------------------------------------------------------------------------
 # RAPORTY TYGODNIOWE (Modul 5)
 # ---------------------------------------------------------------------------
@@ -129,6 +147,18 @@ def pobierz_historie_raportow(limit: int = 30) -> list:
         return db_core.pobierz_historie_raportow(db, limit=limit)
     except Exception as e:
         st.warning(f"Blad odczytu historii: {e}")
+        return []
+
+
+# ---------------------------------------------------------------------------
+# HISTORIA SYNCHRONIZACJI DZIENNEJ (automatyczny job o 3:00)
+# ---------------------------------------------------------------------------
+def pobierz_historie_synchronizacji(limit: int = 30) -> list:
+    db = _get_db()
+    try:
+        return db_core.pobierz_historie_synchronizacji(db, limit=limit)
+    except Exception as e:
+        st.warning(f"Blad odczytu historii synchronizacji: {e}")
         return []
 
 
