@@ -4,6 +4,7 @@ import re
 import time
 import requests
 import io
+import random
 import concurrent.futures
 import threading
 import PyPDF2
@@ -71,12 +72,22 @@ MIESIACE_PL   = [
 # ---------------------------------------------------------------------------
 # USTAWIENIA SZYBKOŚCI
 # ---------------------------------------------------------------------------
-# Liczba równoległych wątków pobierających PDF/HTML
-WORKERS_POBIERANIA = 5          # ► NOWE: równoległość zamiast seq.
-OPOZNIENIE_MIN     = 0.6        # ► ZMNIEJSZONE z 1.5 s
-OPOZNIENIE_MAX     = 1.2        # ► ZMNIEJSZONE z 2.5 s
-TIMEOUT_PDF        = 15         # sekund (było 20)
+# Liczba równoległych wątków pobierających PDF/HTML.
+# Tryb NIEZAWODNY: mniej watkow + wieksze opoznienia = serwer MF rzadziej
+# blokuje IP przy masowym pobieraniu tresci (kluczowe na stalym IP GitHub Actions).
+WORKERS_POBIERANIA = 3          # bylo 5 - mniej rownoleglosci = lagodniej dla MF
+OPOZNIENIE_MIN     = 0.8
+OPOZNIENIE_MAX     = 1.6
+TIMEOUT_PDF        = 15         # sekund
 TIMEOUT_HTML       = 10
+
+# ── Reakcja na blokade IP w trakcie pobierania tresci ──────────────────────
+# Gdy MF zablokuje IP (429/403), NIE porzucamy calej partii. Watki robia
+# pauze i wznawiaja prace (backoff), a dokumenty ktore trafily na blokade
+# wracaja na liste "do ponowienia" - dzieki temu jedna blokada nie kasuje
+# setek dokumentow (dawniej: pierwsza blokada ubijala cala partie).
+PAUZA_PO_BLOKADZIE_S      = 45   # ile watek czeka po wykryciu blokady, zanim wznowi
+MAKS_PAUZ_BLOKADY         = 4    # ile razy w obrebie jednej partii pozwalamy na pauze
 
 # Blokada do bezpiecznego dostępu do listy wyników z wątków
 _lock = threading.Lock()
@@ -258,39 +269,78 @@ def pobierz_tekst_pdf(id_dokumentu, sesja=None):
     return None, "BLOKADA"
 
 # ---------------------------------------------------------------------------
-# ► NOWE: RÓWNOLEGŁE POBIERANIE DOKUMENTÓW
+# ► RÓWNOLEGŁE POBIERANIE DOKUMENTÓW (tryb niezawodny z reakcja na blokade)
 # ---------------------------------------------------------------------------
 def pobierz_dokumenty_rownolegle(
     lista_dokumentow: list,
     przetworzone_id: set,
     uszkodzone_id: set,
     callback_postep=None,   # fn(idx, total, sygnatura, status)
-    workers: int = WORKERS_POBIERANIA
-) -> tuple[list, list, list]:
+    workers: int = WORKERS_POBIERANIA,
+    log_fn=None,
+) -> tuple:
     """
-    Pobiera dokumenty równolegle w `workers` wątkach.
+    Pobiera dokumenty równolegle w `workers` wątkach, w trybie NIEZAWODNYM.
+
+    Reakcja na blokade IP (429/403 z MF): zamiast porzucic cala partie po
+    pierwszej blokadzie (dawne zachowanie: "555 do pobrania -> 56 zapisanych"),
+    watki robia PAUZE i WZNAWIAJA prace. Dokument, ktory trafil na blokade,
+    jest ponawiany; jesli po wznowieniu nadal sie nie udaje, trafia na liste
+    `do_ponowienia` (a NIE `uszkodzone`) - warstwa wyzej moze go pozniej
+    dociagnac w kolejnej probie calego zadania.
+
+    Rozroznienie statusow ma znaczenie:
+      - `uszkodzone`    = dokument NIE ISTNIEJE w pobieralnej formie (skan bez
+                          tekstu, brak HTML i PDF) -> nie ma sensu ponawiac
+      - `do_ponowienia` = dokument istnieje, ale zablokowano IP / timeout
+                          -> warto ponowic pozniej
 
     Zwraca:
-        (pelne_tresci, nowe_przetworzone_id, nowe_uszkodzone_id)
-        — tylko NOWE rekordy z tego wywołania, do scalenia przez dzwoniącego.
-
-    callback_postep(idx, total, sygnatura, status_str) jest wołany po każdym dokumencie,
-    dzięki czemu UI może aktualizować pasek postępu.
+        (pelne_tresci, nowe_przetworzone_id, nowe_uszkodzone_id,
+         byla_blokada: bool, do_ponowienia_id: list)
     """
+    def _log(msg):
+        if log_fn:
+            log_fn(msg)
+
     pelne_tresci       = []
     nowe_przetworzone  = []
     nowe_uszkodzone    = []
-    blokada_wykryta    = threading.Event()
+    do_ponowienia      = []
     total              = len(lista_dokumentow)
+
+    # Licznik pauz po blokadzie - wspoldzielony miedzy watkami.
+    pauzy_uzyte        = {"n": 0}
+    byla_blokada       = {"tak": False}
+    _pauza_lock        = threading.Lock()
+
+    def _obsluz_blokade() -> bool:
+        """
+        Wolane przez watek, ktory dostal BLOKADE. Robi pauze (jesli nie
+        wyczerpano limitu) i zwraca True, jesli watek powinien PONOWIC
+        dokument, albo False, jesli limit pauz wyczerpany (poddajemy dokument).
+        """
+        with _pauza_lock:
+            byla_blokada["tak"] = True
+            if pauzy_uzyte["n"] >= MAKS_PAUZ_BLOKADY:
+                return False
+            pauzy_uzyte["n"] += 1
+            numer = pauzy_uzyte["n"]
+        _log(f"    ⏸ Wykryto blokade IP MF — pauza {PAUZA_PO_BLOKADZIE_S}s "
+             f"({numer}/{MAKS_PAUZ_BLOKADY}), potem wznawiam...")
+        time.sleep(PAUZA_PO_BLOKADZIE_S)
+        return True
 
     def _pobierz_jeden(args):
         idx, dok = args
-        if blokada_wykryta.is_set():
-            return idx, dok, None, "POMINIETY"
-        # Każdy wątek tworzy własną sesję HTTP (bardziej przyjazne dla serwera)
+        # Rozlozenie startow w czasie + losowy jitter (lagodniej dla serwera)
+        time.sleep((idx % workers) * 0.2 + random.uniform(OPOZNIENIE_MIN, OPOZNIENIE_MAX))
         with requests.Session() as s:
-            time.sleep((idx % workers) * 0.15)   # rozłożenie startów w czasie
             tekst, status = pobierz_tekst_pdf(dok["id"], sesja=s)
+            # Jesli blokada - sprobuj pauzy i JEDNEGO ponowienia w tym samym watku
+            if status == "BLOKADA":
+                if _obsluz_blokade():
+                    tekst, status = pobierz_tekst_pdf(dok["id"], sesja=s)
         return idx, dok, tekst, status
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
@@ -317,10 +367,13 @@ def pobierz_dokumenty_rownolegle(
                     pelne_tresci.append(rekord)
                     nowe_przetworzone.append(dok["id"])
                 elif status == "BLOKADA":
-                    blokada_wykryta.set()
-                    nowe_uszkodzone.append(dok["id"])   # tymczasowo jako uszkodzone
+                    # Nadal blokada po pauzie/ponowieniu -> do ponowienia pozniej
+                    do_ponowienia.append(dok["id"])
                 elif status in ("BRAK_PLIKU", "BŁĄD_CZYTANIA"):
+                    # Dokument nie istnieje w pobieralnej formie -> trwaly brak
                     nowe_uszkodzone.append(dok["id"])
+                else:
+                    do_ponowienia.append(dok["id"])
 
             if callback_postep:
                 callback_postep(completed, total, dok["sygnatura"], status)
@@ -332,7 +385,12 @@ def pobierz_dokumenty_rownolegle(
         0
     ))
 
-    return pelne_tresci, nowe_przetworzone, nowe_uszkodzone, blokada_wykryta.is_set()
+    if do_ponowienia:
+        _log(f"    ℹ {len(do_ponowienia)} dokumentow do ponowienia (blokada/timeout), "
+             f"{len(nowe_uszkodzone)} trwale niedostepnych (brak pliku).")
+
+    return (pelne_tresci, nowe_przetworzone, nowe_uszkodzone,
+            byla_blokada["tak"], do_ponowienia)
 
 # ---------------------------------------------------------------------------
 # POBIERANIE LISTY DOKUMENTÓW Z API MF (bez zmian w logice, tylko cleanup)
