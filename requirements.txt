@@ -9,3 +9,5 @@ xlsxwriter
 beautifulsoup4
 lxml
 psycopg2-binary
+
+reportlab
