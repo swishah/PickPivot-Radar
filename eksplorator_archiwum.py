@@ -82,6 +82,13 @@ def _sciezki_kandydatow_fontu():
     return [
         (os.path.join(tu, "fonts", "DejaVuSans.ttf"),
          os.path.join(tu, "fonts", "DejaVuSans-Bold.ttf")),
+        # Linux (serwer) rozroznia wielkosc liter w sciezkach - "Fonts" i "fonts"
+        # to dla niego dwa rozne foldery. Sprawdzamy oba warianty, zeby literowka
+        # w nazwie folderu w repozytorium nie wywalala calego mechanizmu.
+        (os.path.join(tu, "Fonts", "DejaVuSans.ttf"),
+         os.path.join(tu, "Fonts", "DejaVuSans-Bold.ttf")),
+        (os.path.join(tu, "FONTS", "DejaVuSans.ttf"),
+         os.path.join(tu, "FONTS", "DejaVuSans-Bold.ttf")),
         ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
          "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
         ("/usr/share/fonts/dejavu/DejaVuSans.ttf",
