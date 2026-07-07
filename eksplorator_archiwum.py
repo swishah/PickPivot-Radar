@@ -14,9 +14,20 @@ Trzy sekcje:
      pasujacych dokumentow (dawny "Explorer Archiwum").
 """
 
+import io
+import os
+import re
 import streamlit as st
 import pandas as pd
 from datetime import datetime
+
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.units import cm
+from reportlab.lib import colors
+from reportlab.lib.styles import ParagraphStyle
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, HRFlowable
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 
 
 def _wykryj_archiwum():
@@ -45,6 +56,177 @@ def _formatuj_date(data_str: str) -> str:
         return datetime.strptime(str(data_str)[:10], "%Y-%m-%d").strftime("%d.%m.%Y")
     except Exception:
         return str(data_str)
+
+
+# =============================================================================
+# GENEROWANIE PDF — pojedyncza interpretacja
+# =============================================================================
+_FONT_REGULAR = "Helvetica"
+_FONT_BOLD    = "Helvetica-Bold"
+_fonty_zarejestrowane = False
+
+
+def _zarejestruj_fonty():
+    """
+    Rejestruje font z pelnym wsparciem Unicode (polskie znaki diakrytyczne:
+    a, c, e, l, n, o, s, z, z - domyslne fonty reportlab/PDF (Helvetica,
+    WinAnsiEncoding) ICH NIE OBSLUGUJA i renderuja jako puste kwadraty).
+
+    Szuka DejaVu Sans w typowych lokalizacjach linuksowych. Jesli nie
+    znajdzie - cicho zostaje przy Helvetica (PDF nadal powstanie, ale
+    polskie znaki moga wyswietlic sie blednie). Uruchamia sie raz na
+    caly czas zycia procesu (flaga globalna), nie przy kazdym PDF-ie.
+    """
+    global _FONT_REGULAR, _FONT_BOLD, _fonty_zarejestrowane
+    if _fonty_zarejestrowane:
+        return
+
+    kandydaci = [
+        ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
+        ("/usr/share/fonts/dejavu/DejaVuSans.ttf",
+         "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf"),
+        ("/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf",
+         "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans-Bold.ttf"),
+    ]
+    for regularny, pogrubiony in kandydaci:
+        try:
+            if os.path.exists(regularny):
+                pdfmetrics.registerFont(TTFont("DejaVuSans", regularny))
+                _FONT_REGULAR = "DejaVuSans"
+                if pogrubiony and os.path.exists(pogrubiony):
+                    pdfmetrics.registerFont(TTFont("DejaVuSans-Bold", pogrubiony))
+                    _FONT_BOLD = "DejaVuSans-Bold"
+                else:
+                    _FONT_BOLD = "DejaVuSans"
+                break
+        except Exception:
+            continue
+
+    _fonty_zarejestrowane = True
+
+
+def _oczysc_do_pdf(tekst: str) -> list:
+    """
+    Dzieli surowy tekst interpretacji na akapity (po pustych liniach)
+    i eskejpuje znaki specjalne wymagane przez mini-jezyk znacznikowy
+    Paragraph z reportlab (<, >, &).
+    """
+    if not tekst or not str(tekst).strip():
+        return ["<i>Brak treści dokumentu w bazie.</i>"]
+
+    bloki = re.split(r"\n\s*\n", str(tekst).strip())
+    akapity = []
+    for blok in bloki:
+        linia = " ".join(l.strip() for l in blok.splitlines() if l.strip())
+        if not linia:
+            continue
+        linia = (linia.replace("&", "&amp;")
+                       .replace("<", "&lt;")
+                       .replace(">", "&gt;"))
+        akapity.append(linia)
+    return akapity or ["<i>Brak treści dokumentu w bazie.</i>"]
+
+
+def _generuj_pdf_interpretacji(sygnatura: str, podatek: str, data_wyd: str,
+                               tekst: str, link: str) -> bytes:
+    """Buduje ladnie sformatowany PDF pojedynczej interpretacji. Zwraca bajty."""
+    _zarejestruj_fonty()
+
+    granatowy = colors.HexColor("#1B2A4A")
+    szary     = colors.HexColor("#5A6472")
+    linia_szr = colors.HexColor("#C7CCD6")
+
+    bufor = io.BytesIO()
+    doc = SimpleDocTemplate(
+        bufor, pagesize=A4,
+        topMargin=2.2 * cm, bottomMargin=2 * cm,
+        leftMargin=2 * cm, rightMargin=2 * cm,
+        title=f"Interpretacja {sygnatura}",
+    )
+
+    styl_marka = ParagraphStyle(
+        "MarkaNaglowek", fontName=_FONT_REGULAR, fontSize=9,
+        textColor=szary, spaceAfter=2,
+    )
+    styl_tytul = ParagraphStyle(
+        "Tytul", fontName=_FONT_BOLD, fontSize=18,
+        textColor=granatowy, spaceAfter=6, leading=22,
+    )
+    styl_meta = ParagraphStyle(
+        "Meta", fontName=_FONT_REGULAR, fontSize=10.5,
+        textColor=szary, spaceAfter=14, leading=15,
+    )
+    styl_sekcja = ParagraphStyle(
+        "Sekcja", fontName=_FONT_BOLD, fontSize=12,
+        textColor=granatowy, spaceBefore=6, spaceAfter=10,
+    )
+    styl_tresc = ParagraphStyle(
+        "Tresc", fontName=_FONT_REGULAR, fontSize=10.3,
+        leading=15.5, spaceAfter=9, alignment=4,  # 4 = justowanie
+        textColor=colors.HexColor("#1A1A1A"),
+    )
+    styl_stopka_notka = ParagraphStyle(
+        "StopkaNotka", fontName=_FONT_REGULAR, fontSize=8.3,
+        textColor=szary, spaceBefore=4, leading=11,
+    )
+
+    elementy = []
+    elementy.append(Paragraph("PickPivot — Archiwum Interpretacji Indywidualnych", styl_marka))
+    elementy.append(HRFlowable(width="100%", thickness=1.1, color=granatowy, spaceAfter=10))
+    elementy.append(Paragraph(sygnatura or "—", styl_tytul))
+
+    data_fmt = _formatuj_date(data_wyd)
+    meta_linia = (f"Podatek: <b>{podatek or '—'}</b>"
+                  f"&nbsp;&nbsp;&nbsp;•&nbsp;&nbsp;&nbsp;"
+                  f"Data wydania: <b>{data_fmt}</b>")
+    elementy.append(Paragraph(meta_linia, styl_meta))
+
+    elementy.append(Paragraph("Treść interpretacji", styl_sekcja))
+    for akapit in _oczysc_do_pdf(tekst):
+        elementy.append(Paragraph(akapit, styl_tresc))
+
+    elementy.append(Spacer(1, 10))
+    elementy.append(HRFlowable(width="100%", thickness=0.6, color=linia_szr, spaceAfter=6))
+    if link:
+        link_bezp = str(link).replace("&", "&amp;")
+        elementy.append(Paragraph(f"Źródło: {link_bezp}", styl_stopka_notka))
+    elementy.append(Paragraph(
+        "Dokument pobrany z bazy PickPivot. Przed wykorzystaniem zweryfikuj "
+        "aktualność interpretacji (możliwe uchylenie lub zmiana).",
+        styl_stopka_notka,
+    ))
+
+    def _stopka(canvas, doc_):
+        canvas.saveState()
+        canvas.setFont(_FONT_REGULAR, 8)
+        canvas.setFillColor(szary)
+        canvas.drawRightString(A4[0] - 2 * cm, 1.2 * cm, f"Strona {doc_.page}")
+        canvas.drawString(2 * cm, 1.2 * cm,
+                          f"Wygenerowano: {datetime.now().strftime('%d.%m.%Y %H:%M')}")
+        canvas.restoreState()
+
+    doc.build(elementy, onFirstPage=_stopka, onLaterPages=_stopka)
+    return bufor.getvalue()
+
+
+@st.cache_data(show_spinner=False, max_entries=300)
+def _generuj_pdf_interpretacji_cached(doc_id: str, sygnatura: str, podatek: str,
+                                      data_wyd: str, tekst: str, link: str) -> bytes:
+    """
+    Wersja cachowana — przy kazdym rerunie Streamlit (np. zmiana innego
+    filtra na stronie) wszystkie widoczne przyciski download_button musza
+    ponownie obliczyc swoje dane; cache_data sprawia, ze PDF liczy sie
+    naprawde tylko raz na dokument, a kolejne rerendery uzywaja wyniku
+    z pamieci zamiast generowac PDF od nowa.
+    """
+    return _generuj_pdf_interpretacji(sygnatura, podatek, data_wyd, tekst, link)
+
+
+def _nazwa_pliku_pdf(sygnatura: str, doc_id: str) -> str:
+    baza = sygnatura or doc_id or "interpretacja"
+    bezpieczna = re.sub(r"[^A-Za-z0-9._-]", "_", baza)
+    return f"{bezpieczna}.pdf"
 
 
 # =============================================================================
@@ -184,16 +366,47 @@ def _renderuj_przegladarke(arch):
 
         for podatek, rekordy in sorted(grupy.items()):
             st.markdown(f"**{podatek}** — {len(rekordy)} interpretacji")
-            dane_tab = [
-                {"#": i + 1, "Sygnatura": r["Sygnatura"], "Data wydania": r["Data"]}
-                for i, r in enumerate(sorted(rekordy, key=lambda x: x["Data"], reverse=True))
-            ]
-            st.dataframe(
-                pd.DataFrame(dane_tab),
-                use_container_width=True,
-                hide_index=True,
-                height=min(400, 38 + len(dane_tab) * 35),
-            )
+            rekordy_sort = sorted(rekordy, key=lambda x: x["Data"], reverse=True)
+
+            # Proporcje kolumn: # | Sygnatura | Data wydania | (przycisk PDF)
+            proporcje = [0.6, 6, 1.7, 1.6]
+
+            naglowek = st.columns(proporcje)
+            for col, etykieta in zip(naglowek, ["#", "Sygnatura", "Data wydania", ""]):
+                col.markdown(
+                    f"<div style='font-weight:600;color:#8892A6;font-size:0.82rem;"
+                    f"padding-bottom:6px;border-bottom:1px solid #333;'>{etykieta}</div>",
+                    unsafe_allow_html=True,
+                )
+
+            for i, r in enumerate(rekordy_sort):
+                c_num, c_syg, c_data, c_btn = st.columns(proporcje)
+
+                styl_kom = "padding-top:8px;padding-bottom:8px;"
+                c_num.markdown(f"<div style='{styl_kom}color:#8892A6;'>{i + 1}</div>",
+                                unsafe_allow_html=True)
+                c_syg.markdown(f"<div style='{styl_kom}'>{r['Sygnatura']}</div>",
+                                unsafe_allow_html=True)
+                c_data.markdown(f"<div style='{styl_kom}'>{r['Data']}</div>",
+                                unsafe_allow_html=True)
+
+                doc_id = arch._id_z_rekordu(r)
+                try:
+                    pdf_bytes = _generuj_pdf_interpretacji_cached(
+                        doc_id,
+                        r.get("Sygnatura", ""), r.get("Podatek", ""),
+                        r.get("Data", ""), r.get("Tekst", ""), r.get("Link", ""),
+                    )
+                    c_btn.download_button(
+                        "📄 PDF",
+                        data=pdf_bytes,
+                        file_name=_nazwa_pliku_pdf(r.get("Sygnatura", ""), doc_id),
+                        mime="application/pdf",
+                        key=f"pdf_{podatek}_{doc_id}_{i}",
+                        use_container_width=True,
+                    )
+                except Exception:
+                    c_btn.caption("⚠️ Błąd PDF")
     elif szukaj:
         st.warning("Brak interpretacji w archiwum dla wybranych kryteriów.")
 
