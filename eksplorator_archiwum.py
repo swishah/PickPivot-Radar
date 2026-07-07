@@ -64,24 +64,24 @@ def _formatuj_date(data_str: str) -> str:
 _FONT_REGULAR = "Helvetica"
 _FONT_BOLD    = "Helvetica-Bold"
 _fonty_zarejestrowane = False
+_font_polski_ok = False   # True tylko gdy realnie zaladowano font z polskimi znakami
 
 
-def _zarejestruj_fonty():
+def _sciezki_kandydatow_fontu():
     """
-    Rejestruje font z pelnym wsparciem Unicode (polskie znaki diakrytyczne:
-    a, c, e, l, n, o, s, z, z - domyslne fonty reportlab/PDF (Helvetica,
-    WinAnsiEncoding) ICH NIE OBSLUGUJA i renderuja jako puste kwadraty).
-
-    Szuka DejaVu Sans w typowych lokalizacjach linuksowych. Jesli nie
-    znajdzie - cicho zostaje przy Helvetica (PDF nadal powstanie, ale
-    polskie znaki moga wyswietlic sie blednie). Uruchamia sie raz na
-    caly czas zycia procesu (flaga globalna), nie przy kazdym PDF-ie.
+    Kolejnosc szukania fontu z pelnym wsparciem Unicode (polskie znaki
+    diakrytyczne). NA PIERWSZYM MIEJSCU font dolaczony do repozytorium
+    (folder 'fonts/' obok tego pliku) — to gwarantuje dzialanie niezaleznie
+    od tego, co ma zainstalowane konkretne srodowisko hostingowe (Streamlit
+    Community Cloud domyslnie NIE ma DejaVu Sans, stad wczesniejszy problem
+    z brakiem polskich znakow — font cicho spadal na Helvetica, ktora ich
+    nie obsluguje). Dopiero potem probujemy typowych sciezek systemowych
+    jako dodatkowy fallback.
     """
-    global _FONT_REGULAR, _FONT_BOLD, _fonty_zarejestrowane
-    if _fonty_zarejestrowane:
-        return
-
-    kandydaci = [
+    tu = os.path.dirname(os.path.abspath(__file__))
+    return [
+        (os.path.join(tu, "fonts", "DejaVuSans.ttf"),
+         os.path.join(tu, "fonts", "DejaVuSans-Bold.ttf")),
         ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
          "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
         ("/usr/share/fonts/dejavu/DejaVuSans.ttf",
@@ -89,7 +89,21 @@ def _zarejestruj_fonty():
         ("/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf",
          "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans-Bold.ttf"),
     ]
-    for regularny, pogrubiony in kandydaci:
+
+
+def _zarejestruj_fonty():
+    """
+    Rejestruje font z pelnym wsparciem Unicode. W razie niepowodzenia
+    NIE MILCZY — ustawia _font_polski_ok=False, co run_module() zamienia
+    na widoczne ostrzezenie w aplikacji. Wczesniej brak fontu byl cichy,
+    przez co wadliwe PDF-y (bez polskich znakow) moglo pobrac wiele osob,
+    zanim ktokolwiek to zauwazyl.
+    """
+    global _FONT_REGULAR, _FONT_BOLD, _fonty_zarejestrowane, _font_polski_ok
+    if _fonty_zarejestrowane:
+        return
+
+    for regularny, pogrubiony in _sciezki_kandydatow_fontu():
         try:
             if os.path.exists(regularny):
                 pdfmetrics.registerFont(TTFont("DejaVuSans", regularny))
@@ -99,6 +113,7 @@ def _zarejestruj_fonty():
                     _FONT_BOLD = "DejaVuSans-Bold"
                 else:
                     _FONT_BOLD = "DejaVuSans"
+                _font_polski_ok = True
                 break
         except Exception:
             continue
@@ -426,6 +441,16 @@ def run_module():
             "skonfiguruj sekcje [supabase] w Streamlit Secrets."
         )
         return
+
+    _zarejestruj_fonty()
+    if not _font_polski_ok:
+        st.warning(
+            "⚠️ Nie znaleziono fontu z polskimi znakami diakrytycznymi — "
+            "wygenerowane PDF-y mogą wyświetlać ą/ć/ę/ł/ń/ó/ś/ź/ż niepoprawnie. "
+            "Dodaj folder `fonts/` z plikami DejaVuSans.ttf i DejaVuSans-Bold.ttf "
+            "obok pliku eksplorator_archiwum.py w repozytorium.",
+            icon="⚠️",
+        )
 
     _renderuj_podsumowanie(arch)
     st.markdown("---")
