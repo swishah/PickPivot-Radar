@@ -81,10 +81,16 @@ def strumien_metadane(db, sesja, formularz, log=print):
             + (f" (CBOSA deklaruje {total})" if total is not None else "")
             + f", nowych do pobrania: {len(nowe_id)}")
 
-        nowych, bledy = 0, 0
+        nowych, bledy, pominiete = 0, 0, 0
         for k, did in enumerate(nowe_id, 1):
             try:
                 w = cbosa.pobierz_szczegoly(sesja, did, log_fn=None)
+                # Zabezpieczenie 2. poziomu: filtr listy dziala po tytule;
+                # gdyby postanowienie mialo nietypowy tytul i sie przeslizgnelo,
+                # rodzaj z parsera szczegolow zatrzymuje je przed zapisem.
+                if (w.get("rodzaj") or "").strip().lower().startswith("postanowienie"):
+                    pominiete += 1
+                    continue
                 db_wyroki.zapisz_wyrok(db, w)
                 nowych += 1
                 if k % 10 == 0 or k == len(nowe_id):
@@ -93,6 +99,8 @@ def strumien_metadane(db, sesja, formularz, log=print):
                 bledy += 1
                 log(f"[{podatek}] Blad dokumentu {did}: {e}")
 
+        if pominiete:
+            log(f"[{podatek}] Pominieto {pominiete} postanowien wykrytych na poziomie szczegolow.")
         status = "OK" if bledy == 0 else ("CZESCIOWO" if nowych else "ERROR")
         db_wyroki.zapisz_historie_sync_wyrokow(
             db, "METADANE", od, do, podatek, len(lista), nowych, 0, status,
@@ -131,6 +139,8 @@ def strumien_uzasadnienia(db, sesja, formularz, log=print):
         for k, did in enumerate(do_pobrania, 1):
             try:
                 w = cbosa.pobierz_szczegoly(sesja, did, log_fn=None)
+                if (w.get("rodzaj") or "").strip().lower().startswith("postanowienie"):
+                    continue   # zabezpieczenie 2. poziomu — jak w strumieniu 1
                 wynik = db_wyroki.zapisz_wyrok(db, w)
                 if wynik == "NOWY":
                     nowych += 1

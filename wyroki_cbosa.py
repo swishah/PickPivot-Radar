@@ -214,6 +214,26 @@ def zbuduj_zapytanie(formularz: dict, symbol: str, data_od: str, data_do: str,
 # WYSZUKIWANIE + PAGINACJA
 # ---------------------------------------------------------------------------
 _RE_DOC = re.compile(r"/doc/([0-9A-Fa-f]{6,})")
+
+# Rodzaje orzeczen POMIJANE przy archiwizacji. Postanowienia (proceduralne:
+# zawieszenia, odrzucenia, koszty) nie maja wartosci merytorycznej dla
+# archiwum interpretacyjnego. Wyroki i uchwaly (te ostatnie o szczegolnej
+# mocy - wiaza sklady orzekajace) przechodza.
+RODZAJE_POMIJANE = ("postanowienie",)
+
+
+def czy_pomijac_rodzaj(tytul: str) -> bool:
+    """
+    True, jesli tytul z listy wynikow wskazuje rodzaj orzeczenia do pominiecia.
+    Tytuly CBOSA maja staly format: "SYGN - Rodzaj SAD z YYYY-MM-DD",
+    wiec rodzaj sprawdzamy po separatorze ' - ', nie w calym tytule
+    (sygnatura moglaby teoretycznie zawierac mylace slowo).
+    """
+    if not tytul:
+        return False
+    czesc = tytul.split(" - ", 1)
+    rodzaj_i_reszta = (czesc[1] if len(czesc) > 1 else tytul).strip().lower()
+    return any(rodzaj_i_reszta.startswith(r) for r in RODZAJE_POMIJANE)
 _RE_LICZBA = [
     re.compile(r"Znaleziono[:\s]+([\d\s\u00a0]+)\s*orzecze", re.I),
     re.compile(r"znalezion\w+\s+dokument\w*[:\s]+([\d\s\u00a0]+)", re.I),
@@ -250,39 +270,68 @@ def _parsuj_liste(html: str):
 
 def szukaj(sesja: requests.Session, formularz: dict, symbol: str,
            data_od: str, data_do: str, tylko_z_uzasadnieniem=False,
-           tylko_prawomocne=False, log_fn=None):
+           tylko_prawomocne=False, pomijaj_postanowienia=True, log_fn=None):
     """
     Wykonuje zapytanie i przewija WSZYSTKIE strony wynikow.
     Zwraca (lista_[(id, tytul)], total_hits_lub_None).
+
+    pomijaj_postanowienia: odfiltrowuje postanowienia (proceduralne) juz na
+    poziomie listy wynikow — ich strony szczegolow NIE sa pobierane.
+    UWAGA: total_hits z CBOSA obejmuje takze odfiltrowane pozycje, wiec
+    lista moze byc krotsza niz total — to oczekiwane, log to pokazuje.
     """
     dane = zbuduj_zapytanie(formularz, symbol, data_od, data_do,
                             tylko_z_uzasadnieniem, tylko_prawomocne)
     r = _zadanie(sesja, "POST", formularz["akcja"], log_fn=log_fn, data=dane)
     wyniki, total = _parsuj_liste(r.text)
+
+    odfiltrowane = 0
+
+    def _przefiltruj(pozycje):
+        nonlocal odfiltrowane
+        if not pomijaj_postanowienia:
+            return pozycje
+        ok = []
+        for i, t in pozycje:
+            if czy_pomijac_rodzaj(t):
+                odfiltrowane += 1
+            else:
+                ok.append((i, t))
+        return ok
+
+    strona_poz = len(wyniki)          # surowa liczba pozycji na stronie (do paginacji)
+    wyniki_f = _przefiltruj(wyniki)
     if log_fn:
         t = f"/{total}" if total is not None else ""
-        log_fn(f"    [strona 1] {len(wyniki)} pozycji{(' (lacznie ' + str(len(wyniki)) + t + ')') if total else ''}")
+        log_fn(f"    [strona 1] {strona_poz} pozycji, po filtrze rodzaju: {len(wyniki_f)}{t and ''}")
 
-    wszystkie = list(wyniki)
-    widziane = {i for i, _ in wszystkie}
+    wszystkie = list(wyniki_f)
+    widziane = {i for i, _ in wyniki}          # dedup po SUROWYCH id (takze pominietych)
+    przewinieto = strona_poz                   # ile pozycji listy juz obejrzano
     strona = 2
     while strona <= MAKS_STRON:
-        if total is not None and len(wszystkie) >= total:
+        if total is not None and przewinieto >= total:
             break
-        if not wyniki:            # pusta strona = koniec
+        if strona_poz == 0:            # pusta strona = koniec
             break
         r = _zadanie(sesja, "GET", f"{FIND_URL}?p={strona}", log_fn=log_fn)
         wyniki, _ = _parsuj_liste(r.text)
         nowe = [(i, t) for i, t in wyniki if i not in widziane]
-        if not nowe:              # strona bez nowych pozycji = koniec/petla
+        if not nowe:                   # strona bez nowych pozycji = koniec/petla
             break
-        for i, t in nowe:
+        for i, _t in nowe:
             widziane.add(i)
-        wszystkie.extend(nowe)
+        strona_poz = len(nowe)
+        przewinieto += len(nowe)
+        nowe_f = _przefiltruj(nowe)
+        wszystkie.extend(nowe_f)
         if log_fn:
-            log_fn(f"    [strona {strona}] +{len(nowe)} (lacznie {len(wszystkie)}"
-                   + (f"/{total}" if total is not None else "") + ")")
+            log_fn(f"    [strona {strona}] +{len(nowe)} pozycji (+{len(nowe_f)} po filtrze; "
+                   f"przewinieto {przewinieto}" + (f"/{total}" if total is not None else "") + ")")
         strona += 1
+
+    if log_fn and odfiltrowane:
+        log_fn(f"    Pominieto {odfiltrowane} postanowien (rodzaj poza archiwum).")
 
     return wszystkie, total
 
