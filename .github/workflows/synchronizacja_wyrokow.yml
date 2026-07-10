@@ -1,0 +1,72 @@
+name: Synchronizacja wyrokow CBOSA
+
+on:
+  schedule:
+    # Niedziela 03:30 UTC (ok. 4:30/5:30 czasu polskiego) — po nocnej
+    # synchronizacji interpretacji, w porze najmniejszego ruchu na CBOSA.
+    - cron: '30 3 * * 0'
+
+  # Reczne uruchomienie z zakladki Actions. Tryb "kalibracja" NIE zapisuje
+  # nic do bazy — testuje tylko parser na zywym CBOSA (uzyj przy PIERWSZYM
+  # uruchomieniu, zanim wlaczysz tryb pelny).
+  workflow_dispatch:
+    inputs:
+      tryb:
+        description: 'Tryb pracy'
+        required: true
+        type: choice
+        options:
+          - 'kalibracja'
+          - 'pelny'
+        default: 'kalibracja'
+      strumienie:
+        description: 'Strumienie (tylko tryb pelny), np. 1,2,3'
+        required: false
+        default: '1,2,3'
+
+jobs:
+  synchronizuj-wyroki:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+
+    steps:
+      - name: Pobierz kod repozytorium
+        uses: actions/checkout@v4
+
+      - name: Ustaw Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Zainstaluj zaleznosci
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests beautifulsoup4 lxml psycopg2-binary
+
+      - name: Kalibracja (bez zapisu do bazy)
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.tryb == 'kalibracja'
+        run: python synchronizacja_wyrokow.py --kalibracja
+
+      - name: Synchronizacja pelna (reczna)
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.tryb == 'pelny'
+        env:
+          SUPABASE_HOST:     ${{ secrets.SUPABASE_HOST }}
+          SUPABASE_PORT:     ${{ secrets.SUPABASE_PORT }}
+          SUPABASE_DB:       ${{ secrets.SUPABASE_DB }}
+          SUPABASE_USER:     ${{ secrets.SUPABASE_USER }}
+          SUPABASE_PASSWORD: ${{ secrets.SUPABASE_PASSWORD }}
+        run: python synchronizacja_wyrokow.py --strumienie "${{ github.event.inputs.strumienie }}"
+
+      - name: Synchronizacja pelna (harmonogram niedzielny)
+        if: github.event_name == 'schedule'
+        env:
+          SUPABASE_HOST:     ${{ secrets.SUPABASE_HOST }}
+          SUPABASE_PORT:     ${{ secrets.SUPABASE_PORT }}
+          SUPABASE_DB:       ${{ secrets.SUPABASE_DB }}
+          SUPABASE_USER:     ${{ secrets.SUPABASE_USER }}
+          SUPABASE_PASSWORD: ${{ secrets.SUPABASE_PASSWORD }}
+        run: python synchronizacja_wyrokow.py
+
+      - name: Podsumowanie
+        if: always()
+        run: echo "Zadanie zakonczone. Sprawdz logi powyzej."
