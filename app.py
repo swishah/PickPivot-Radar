@@ -5,6 +5,7 @@ import time
 import cfo_analyzer
 import raporty
 import eksplorator_archiwum
+import eksplorator_wyrokow
 
 # 1. Konfiguracja głównej strony
 st.set_page_config(page_title="PickPivot Platform", page_icon="⚡", layout="wide")
@@ -39,7 +40,8 @@ aktywna_zakladka = st.sidebar.radio(
         "1. Ściągacz Interpretacji",
         "2. Archiwum Interpretacji",
         "3. Analiza Wskaźnikowa",
-        "4. Ustawienia Systemu (Wkrótce)"
+        "4. Wyroki Sądów (WSA/NSA)",
+        "5. Ustawienia Systemu (Wkrótce)"
     ]
 )
 
@@ -57,6 +59,8 @@ elif aktywna_zakladka.startswith("2."):
     eksplorator_archiwum.run_module()
 elif aktywna_zakladka.startswith("3."):
     cfo_analyzer.run_module()
+elif aktywna_zakladka.startswith("4."):
+    eksplorator_wyrokow.run_module()
 else:
     # Obsługa zakładek, które są dopiero w planach
     nazwa_modulu = aktywna_zakladka.split('. ')[1] if '. ' in aktywna_zakladka else 'Moduł'
