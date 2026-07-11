@@ -41,8 +41,21 @@ QUERY_URL  = f"{BAZA_URL}/cbo/query"
 FIND_URL   = f"{BAZA_URL}/cbo/find"
 DOC_URL    = f"{BAZA_URL}/doc/{{id}}"
 
-USER_AGENT = ("PickPivot-Archiwum/1.0 (prywatne archiwum doradcy podatkowego; "
-              "kontakt przez repozytorium)")
+USER_AGENT = ("Mozilla/5.0 (compatible; PickPivot-Archiwum/1.0; "
+              "prywatne archiwum doradcy podatkowego)")
+
+# Naglowki "przegladarkowo-kompatybilne": czesc starszych systemow rzadowych
+# odrzuca polaczenia bez naglowka zaczynajacego sie od Mozilla/5.0 zanim
+# w ogole odpowie (stad RemoteDisconnected). Konwencja "Mozilla/5.0
+# (compatible; NazwaBota; ...)" to standardowy, przejrzysty sposob
+# identyfikacji uzywany przez legalne roboty (Googlebot, Bingbot).
+NAGLOWKI_SESJI = {
+    "User-Agent": USER_AGENT,
+    "Accept": ("text/html,application/xhtml+xml,application/xml;q=0.9,"
+               "*/*;q=0.8"),
+    "Accept-Language": "pl-PL,pl;q=0.9,en;q=0.5",
+    "Connection": "keep-alive",
+}
 
 PAUZA_S            = 1.5   # miedzy zadaniami HTTP — celowo wolno
 TIMEOUT_S          = 30
@@ -84,7 +97,7 @@ def _zadanie(sesja: requests.Session, metoda: str, url: str, log_fn=None, **kw):
 
 def nowa_sesja() -> requests.Session:
     s = requests.Session()
-    s.headers.update({"User-Agent": USER_AGENT})
+    s.headers.update(NAGLOWKI_SESJI)
     return s
 
 

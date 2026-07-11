@@ -29,6 +29,7 @@ Zmienne srodowiskowe: SUPABASE_* oraz GMAIL_* jak w pozostalych skryptach.
 
 import os
 import sys
+import time
 import argparse
 from datetime import datetime, timedelta
 
@@ -65,6 +66,7 @@ def strumien_metadane(db, sesja, formularz, log=print):
     od, do = _okno(OKNO_METADANE_DNI)
     log(f"\n=== STRUMIEN 1: METADANE | okno {od}..{do} ===")
     znane = db_wyroki.pobierz_id_wyrokow(db)
+    bledy_wyszukiwania = 0
 
     for podatek, symbol in cbosa.SYMBOLE_PODATKOW.items():
         log(f"\n[{podatek}] symbol {symbol}")
@@ -74,6 +76,7 @@ def strumien_metadane(db, sesja, formularz, log=print):
             log(f"[{podatek}] BLAD wyszukiwania: {e}")
             db_wyroki.zapisz_historie_sync_wyrokow(db, "METADANE", od, do, podatek,
                                                     0, 0, 0, "ERROR", str(e))
+            bledy_wyszukiwania += 1
             continue
 
         nowe_id = [i for i, _ in lista if i not in znane]
@@ -106,6 +109,8 @@ def strumien_metadane(db, sesja, formularz, log=print):
             db, "METADANE", od, do, podatek, len(lista), nowych, 0, status,
             f"bledy dokumentow: {bledy}" if bledy else "")
 
+    return bledy_wyszukiwania
+
 
 # ---------------------------------------------------------------------------
 # STRUMIEN 2 — UZASADNIENIA (dlugie okno, filtr "z uzasadnieniem")
@@ -114,6 +119,7 @@ def strumien_uzasadnienia(db, sesja, formularz, log=print):
     od, do = _okno(OKNO_UZASADNIEN_DNI)
     log(f"\n=== STRUMIEN 2: UZASADNIENIA | okno {od}..{do} (filtr: z uzasadnieniem) ===")
     znane = db_wyroki.pobierz_id_wyrokow(db)
+    bledy_wyszukiwania = 0
 
     for podatek, symbol in cbosa.SYMBOLE_PODATKOW.items():
         log(f"\n[{podatek}] symbol {symbol}")
@@ -124,6 +130,7 @@ def strumien_uzasadnienia(db, sesja, formularz, log=print):
             log(f"[{podatek}] BLAD wyszukiwania: {e}")
             db_wyroki.zapisz_historie_sync_wyrokow(db, "UZASADNIENIA", od, do, podatek,
                                                     0, 0, 0, "ERROR", str(e))
+            bledy_wyszukiwania += 1
             continue
 
         # Rewizytujemy TYLKO to, co nie jest jeszcze KOMPLETNE w bazie —
@@ -161,6 +168,7 @@ def strumien_uzasadnienia(db, sesja, formularz, log=print):
     if trwale:
         log(f"\nOznaczono {trwale} rekordow jako BEZ_UZASADNIENIA_TRWALE "
             f"(starsze niz {db_wyroki.DNI_DO_TRWALEGO_BRAKU} dni, nadal bez uzasadnienia).")
+    return bledy_wyszukiwania
 
 
 # ---------------------------------------------------------------------------
@@ -169,6 +177,7 @@ def strumien_uzasadnienia(db, sesja, formularz, log=print):
 def strumien_prawomocnosc(db, sesja, formularz, log=print):
     od, do = _okno(OKNO_PRAWOMOCNE_DNI)
     log(f"\n=== STRUMIEN 3: PRAWOMOCNOSC | okno {od}..{do} (filtr: prawomocne, tylko listy) ===")
+    bledy_wyszukiwania = 0
 
     for podatek, symbol in cbosa.SYMBOLE_PODATKOW.items():
         try:
@@ -178,12 +187,15 @@ def strumien_prawomocnosc(db, sesja, formularz, log=print):
             log(f"[{podatek}] BLAD wyszukiwania: {e}")
             db_wyroki.zapisz_historie_sync_wyrokow(db, "PRAWOMOCNOSC", od, do, podatek,
                                                     0, 0, 0, "ERROR", str(e))
+            bledy_wyszukiwania += 1
             continue
         ids = [i for i, _ in lista]
         zmienione = db_wyroki.oznacz_prawomocne(db, ids)
         log(f"[{podatek}] Prawomocnych w oknie: {len(ids)}, nowo oznaczonych w bazie: {zmienione}")
         db_wyroki.zapisz_historie_sync_wyrokow(
             db, "PRAWOMOCNOSC", od, do, podatek, len(ids), 0, zmienione, "OK", "")
+
+    return bledy_wyszukiwania
 
 
 # ---------------------------------------------------------------------------
@@ -224,6 +236,30 @@ def kalibracja(log=print):
     log("podatek i dlugosci tekstow wygladaja sensownie, mozna uruchomic tryb pelny.")
 
 
+MAKS_PROB_CALEGO_SYNC   = 3
+ODSTEP_MIEDZY_PROBAMI_S = 600   # 10 minut — czas na "wyleczenie" awarii serwera
+
+
+def _wykonaj_probe(db, wybrane, log=print) -> int:
+    """
+    Jedna pelna proba: NOWA sesja + swiezo rozpoznany formularz + wybrane
+    strumienie. Zwraca laczna liczbe bledow wyszukiwania (0 = czysto).
+    Nowa sesja przy kazdej probie jest kluczowa: po RemoteDisconnected
+    stare polaczenie/cookies moga byc bezuzyteczne.
+    """
+    sesja = cbosa.nowa_sesja()
+    formularz = cbosa.poznaj_formularz(sesja, log_fn=log)
+
+    bledy = 0
+    if "1" in wybrane:
+        bledy += strumien_metadane(db, sesja, formularz) or 0
+    if "2" in wybrane:
+        bledy += strumien_uzasadnienia(db, sesja, formularz) or 0
+    if "3" in wybrane:
+        bledy += strumien_prawomocnosc(db, sesja, formularz) or 0
+    return bledy
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--kalibracja", action="store_true",
@@ -244,29 +280,51 @@ def main():
     db_wyroki.inicjalizuj_schemat_wyrokow(db)
     print("Polaczenie z Supabase OK, schemat wyrokow gotowy.")
 
-    sesja = cbosa.nowa_sesja()
-    formularz = cbosa.poznaj_formularz(sesja, log_fn=print)
-
     wybrane = {s.strip() for s in args.strumienie.split(",")}
-    try:
-        if "1" in wybrane:
-            strumien_metadane(db, sesja, formularz)
-        if "2" in wybrane:
-            strumien_uzasadnienia(db, sesja, formularz)
-        if "3" in wybrane:
-            strumien_prawomocnosc(db, sesja, formularz)
-    except Exception as e:
-        print(f"\nBLAD KRYTYCZNY: {e}")
-        sys.exit(1)
+
+    # ── ZEWNETRZNA PETLA PONAWIANIA CALEGO PRZEBIEGU ────────────────────────
+    # Strumienie sa idempotentne (upsert + pomijanie znanych id), wiec
+    # powtorzenie calosci jest bezpieczne: wykonana praca nie zdubluje sie,
+    # a przy ponowieniu zostanie pominieta. Chwilowa awaria CBOSA (np.
+    # RemoteDisconnected przy rozpoznawaniu formularza) nie ubija juz
+    # calego wielogodzinnego przebiegu.
+    ostatni_blad = None
+    for proba in range(1, MAKS_PROB_CALEGO_SYNC + 1):
+        print(f"\n{'='*70}\nPROBA {proba}/{MAKS_PROB_CALEGO_SYNC}\n{'='*70}")
+        try:
+            bledy = _wykonaj_probe(db, wybrane)
+            if bledy == 0:
+                print(f"\nProba {proba}: zakonczona czysto.")
+                ostatni_blad = None
+                break
+            ostatni_blad = f"{bledy} bledow wyszukiwania"
+            print(f"\nProba {proba}: {ostatni_blad}.")
+        except (cbosa.BladCBOSA, Exception) as e:
+            ostatni_blad = str(e)
+            print(f"\nProba {proba} przerwana bledem: {e}")
+
+        if proba < MAKS_PROB_CALEGO_SYNC:
+            print(f"Czekam {ODSTEP_MIEDZY_PROBAMI_S}s przed kolejna proba "
+                  f"(czas na odzyskanie dostepnosci CBOSA)...")
+            time.sleep(ODSTEP_MIEDZY_PROBAMI_S)
+        else:
+            print(f"Wyczerpano {MAKS_PROB_CALEGO_SYNC} prob.")
 
     print("\n" + "=" * 70)
-    stats = db_wyroki.statystyki_wyrokow(db)
-    print(f"PODSUMOWANIE: {stats['total']} wyrokow w bazie")
-    for p in stats["per_podatek"]:
-        print(f"  {p['podatek'] or '(bez podatku)'}: {p['liczba']} "
-              f"(kompletne: {p['kompletne']}, oczekujace: {p['oczekujace']}, "
-              f"prawomocne: {p['prawomocne']})")
+    try:
+        stats = db_wyroki.statystyki_wyrokow(db)
+        print(f"PODSUMOWANIE: {stats['total']} wyrokow w bazie")
+        for p in stats["per_podatek"]:
+            print(f"  {p['podatek'] or '(bez podatku)'}: {p['liczba']} "
+                  f"(kompletne: {p['kompletne']}, oczekujace: {p['oczekujace']}, "
+                  f"prawomocne: {p['prawomocne']})")
+    except Exception as e:
+        print(f"Nie udalo sie pobrac statystyk: {e}")
     print("=" * 70)
+
+    if ostatni_blad:
+        print(f"ZAKONCZONO Z BLEDAMI: {ostatni_blad}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
