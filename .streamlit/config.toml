@@ -1,0 +1,51 @@
+# .streamlit/config.toml — motyw "Skaner Doradca"
+#
+# Streamlit domyslnie dopasowuje sie do preferencji systemu/przegladarki
+# uzytkownika (jasny/ciemny), a w menu "⋮" -> Settings -> Theme kazdy
+# uzytkownik moze to recznie nadpisac (Light / Dark / Use system setting).
+# Nie trzeba do tego zadnego wlasnego kodu — to wbudowane zachowanie
+# Streamlita, wystarczy zdefiniowac oba warianty ponizej.
+#
+# WARTOSCI SA RECZNIE ZSYNCHRONIZOWANE z paleta.py (JASNY/CIEMNY) —
+# przy zmianie koloru zmien go w OBU miejscach.
+
+[theme]
+showSidebarBorder = true
+
+# ── JASNY: "Kancelaria" — cieply papier, zielen logo, braz ─────────────────
+[theme.light]
+primaryColor = "#386520"
+backgroundColor = "#F6F3EC"
+secondaryBackgroundColor = "#FBF9F4"
+textColor = "#22281F"
+borderColor = "#E1DCCE"
+dataframeBorderColor = "#E1DCCE"
+dataframeHeaderBackgroundColor = "#FBF9F4"
+linkColor = "#386520"
+baseRadius = "medium"
+greenColor = "#386520"
+
+[theme.light.sidebar]
+backgroundColor = "#EFEAD9"
+secondaryBackgroundColor = "#F6F3EC"
+primaryColor = "#386520"
+textColor = "#22281F"
+
+# ── CIEMNY: "Skaner" — niemal czarny, sygnalowa zielen ──────────────────────
+[theme.dark]
+primaryColor = "#46B85B"
+backgroundColor = "#0B0F0A"
+secondaryBackgroundColor = "#12170F"
+textColor = "#E3E9DE"
+borderColor = "#253023"
+dataframeBorderColor = "#253023"
+dataframeHeaderBackgroundColor = "#12170F"
+linkColor = "#46B85B"
+baseRadius = "medium"
+greenColor = "#46B85B"
+
+[theme.dark.sidebar]
+backgroundColor = "#070A06"
+secondaryBackgroundColor = "#0B0F0A"
+primaryColor = "#46B85B"
+textColor = "#E3E9DE"
