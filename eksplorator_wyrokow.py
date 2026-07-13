@@ -17,6 +17,7 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 
+import paleta
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import cm
 from reportlab.lib import colors
@@ -61,9 +62,11 @@ def _generuj_pdf_wyroku(w: dict) -> bytes:
     _arch_mod._zarejestruj_fonty()
     F_REG, F_BOLD = _arch_mod._FONT_REGULAR, _arch_mod._FONT_BOLD
 
-    granatowy = colors.HexColor("#1B2A4A")
-    szary     = colors.HexColor("#5A6472")
-    linia_szr = colors.HexColor("#C7CCD6")
+    # PDF ZAWSZE uzywa jasnej palety (Kancelaria), niezaleznie od trybu ekranu.
+    pal = paleta.paleta_pdf()
+    akcent    = colors.HexColor(pal["primary"])
+    podtekst  = colors.HexColor(pal["text2"])
+    linia_jas = colors.HexColor(pal["border"])
 
     bufor = io.BytesIO()
     doc = SimpleDocTemplate(bufor, pagesize=A4,
@@ -71,17 +74,17 @@ def _generuj_pdf_wyroku(w: dict) -> bytes:
                             leftMargin=2*cm, rightMargin=2*cm,
                             title=f"Wyrok {w.get('sygnatura','')}")
 
-    s_marka  = ParagraphStyle("m",  fontName=F_REG,  fontSize=9,    textColor=szary, spaceAfter=2)
-    s_tytul  = ParagraphStyle("t",  fontName=F_BOLD, fontSize=17,   textColor=granatowy, spaceAfter=6, leading=21)
-    s_meta   = ParagraphStyle("me", fontName=F_REG,  fontSize=10.5, textColor=szary, spaceAfter=12, leading=15)
-    s_sekcja = ParagraphStyle("s",  fontName=F_BOLD, fontSize=12,   textColor=granatowy, spaceBefore=8, spaceAfter=8)
+    s_marka  = ParagraphStyle("m",  fontName=F_REG,  fontSize=9,    textColor=podtekst, spaceAfter=2)
+    s_tytul  = ParagraphStyle("t",  fontName=F_BOLD, fontSize=17,   textColor=akcent, spaceAfter=6, leading=21)
+    s_meta   = ParagraphStyle("me", fontName=F_REG,  fontSize=10.5, textColor=podtekst, spaceAfter=12, leading=15)
+    s_sekcja = ParagraphStyle("s",  fontName=F_BOLD, fontSize=12,   textColor=akcent, spaceBefore=8, spaceAfter=8)
     s_tresc  = ParagraphStyle("tr", fontName=F_REG,  fontSize=10.3, leading=15.5, spaceAfter=9,
-                              alignment=4, textColor=colors.HexColor("#1A1A1A"))
-    s_stopka = ParagraphStyle("st", fontName=F_REG,  fontSize=8.3,  textColor=szary, spaceBefore=4, leading=11)
+                              alignment=4, textColor=colors.HexColor(pal["text"]))
+    s_stopka = ParagraphStyle("st", fontName=F_REG,  fontSize=8.3,  textColor=podtekst, spaceBefore=4, leading=11)
 
     el = []
-    el.append(Paragraph("PickPivot — Archiwum Wyroków Sądów Administracyjnych", s_marka))
-    el.append(HRFlowable(width="100%", thickness=1.1, color=granatowy, spaceAfter=10))
+    el.append(Paragraph(f"{paleta.NAZWA_MARKI} — Archiwum Wyroków Sądów Administracyjnych", s_marka))
+    el.append(HRFlowable(width="100%", thickness=1.1, color=akcent, spaceAfter=10))
 
     naglowek = f"{w.get('sygnatura','—')} — {w.get('rodzaj','')} {(''+w.get('sad','')) if w.get('sad') else ''}"
     el.append(Paragraph(naglowek.strip(), s_tytul))
@@ -118,18 +121,18 @@ def _generuj_pdf_wyroku(w: dict) -> bytes:
             el.append(Paragraph(a, s_tresc))
 
     el.append(Spacer(1, 10))
-    el.append(HRFlowable(width="100%", thickness=0.6, color=linia_szr, spaceAfter=6))
+    el.append(HRFlowable(width="100%", thickness=0.6, color=linia_jas, spaceAfter=6))
     if w.get("link"):
         el.append(Paragraph(f"Źródło: {w['link']}", s_stopka))
     el.append(Paragraph(
-        "Dokument z bazy PickPivot (źródło: CBOSA — baza informacyjna, nie zbiór urzędowy). "
+        f"Dokument z bazy {paleta.NAZWA_MARKI} (źródło: CBOSA — baza informacyjna, nie zbiór urzędowy). "
         "Przed wykorzystaniem zweryfikuj prawomocność i aktualność orzeczenia.",
         s_stopka))
 
     def _stopka(canvas, d):
         canvas.saveState()
         canvas.setFont(F_REG, 8)
-        canvas.setFillColor(szary)
+        canvas.setFillColor(podtekst)
         canvas.drawRightString(A4[0]-2*cm, 1.2*cm, f"Strona {d.page}")
         canvas.drawString(2*cm, 1.2*cm, f"Wygenerowano: {datetime.now().strftime('%d.%m.%Y %H:%M')}")
         canvas.restoreState()
@@ -214,12 +217,13 @@ def _renderuj_przegladarke(db, dbw):
 
     st.success(f"⚖️ Znaleziono **{len(wyniki)}** wyroków")
 
+    pal = paleta.paleta()  # kolory wlasnego HTML musza sledzic aktywny tryb recznie
     proporcje = [0.5, 3.2, 1.4, 1.3, 2.2, 1.4]
     naglowki = ["#", "Sygnatura / sąd", "Data", "Podatek", "Treść", ""]
     kol = st.columns(proporcje)
     for c, e in zip(kol, naglowki):
-        c.markdown(f"<div style='font-weight:600;color:#8892A6;font-size:0.82rem;"
-                   f"padding-bottom:6px;border-bottom:1px solid #333;'>{e}</div>",
+        c.markdown(f"<div style='font-weight:600;color:{pal['text2']};font-size:0.82rem;"
+                   f"padding-bottom:6px;border-bottom:1px solid {pal['border']};'>{e}</div>",
                    unsafe_allow_html=True)
 
     import json
@@ -227,9 +231,9 @@ def _renderuj_przegladarke(db, dbw):
         c_num, c_syg, c_data, c_pod, c_st, c_btn = st.columns(proporcje)
         styl = "padding-top:8px;padding-bottom:8px;"
         praw = " 🟢" if w.get("prawomocny") else ""
-        c_num.markdown(f"<div style='{styl}color:#8892A6;'>{i+1}</div>", unsafe_allow_html=True)
+        c_num.markdown(f"<div style='{styl}color:{pal['text2']};'>{i+1}</div>", unsafe_allow_html=True)
         c_syg.markdown(f"<div style='{styl}'><b>{w['sygnatura']}</b><br>"
-                       f"<span style='color:#8892A6;font-size:0.85rem;'>{w.get('rodzaj','')} · {w.get('sad','')}{praw}</span></div>",
+                       f"<span style='color:{pal['text2']};font-size:0.85rem;'>{w.get('rodzaj','')} · {w.get('sad','')}{praw}</span></div>",
                        unsafe_allow_html=True)
         c_data.markdown(f"<div style='{styl}'>{w['data_orzeczenia']}</div>", unsafe_allow_html=True)
         c_pod.markdown(f"<div style='{styl}'>{w.get('podatek') or '—'}</div>", unsafe_allow_html=True)

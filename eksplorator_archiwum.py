@@ -21,6 +21,7 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 
+import paleta
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import cm
 from reportlab.lib import colors
@@ -152,12 +153,15 @@ def _oczysc_do_pdf(tekst: str) -> list:
 
 def _generuj_pdf_interpretacji(sygnatura: str, podatek: str, data_wyd: str,
                                tekst: str, link: str) -> bytes:
-    """Buduje ladnie sformatowany PDF pojedynczej interpretacji. Zwraca bajty."""
+    """Buduje ladnie sformatowany PDF pojedynczej interpretacji. Zwraca bajty.
+    PDF ZAWSZE uzywa jasnej palety (Kancelaria) niezaleznie od trybu ekranu —
+    dokument czytany/drukowany na papierze nie ma "trybu ciemnego"."""
     _zarejestruj_fonty()
+    p = paleta.paleta_pdf()
 
-    granatowy = colors.HexColor("#1B2A4A")
-    szary     = colors.HexColor("#5A6472")
-    linia_szr = colors.HexColor("#C7CCD6")
+    akcent    = colors.HexColor(p["primary"])
+    podtekst  = colors.HexColor(p["text2"])
+    linia_jas = colors.HexColor(p["border"])
 
     bufor = io.BytesIO()
     doc = SimpleDocTemplate(
@@ -169,33 +173,33 @@ def _generuj_pdf_interpretacji(sygnatura: str, podatek: str, data_wyd: str,
 
     styl_marka = ParagraphStyle(
         "MarkaNaglowek", fontName=_FONT_REGULAR, fontSize=9,
-        textColor=szary, spaceAfter=2,
+        textColor=podtekst, spaceAfter=2,
     )
     styl_tytul = ParagraphStyle(
         "Tytul", fontName=_FONT_BOLD, fontSize=18,
-        textColor=granatowy, spaceAfter=6, leading=22,
+        textColor=akcent, spaceAfter=6, leading=22,
     )
     styl_meta = ParagraphStyle(
         "Meta", fontName=_FONT_REGULAR, fontSize=10.5,
-        textColor=szary, spaceAfter=14, leading=15,
+        textColor=podtekst, spaceAfter=14, leading=15,
     )
     styl_sekcja = ParagraphStyle(
         "Sekcja", fontName=_FONT_BOLD, fontSize=12,
-        textColor=granatowy, spaceBefore=6, spaceAfter=10,
+        textColor=akcent, spaceBefore=6, spaceAfter=10,
     )
     styl_tresc = ParagraphStyle(
         "Tresc", fontName=_FONT_REGULAR, fontSize=10.3,
         leading=15.5, spaceAfter=9, alignment=4,  # 4 = justowanie
-        textColor=colors.HexColor("#1A1A1A"),
+        textColor=colors.HexColor(p["text"]),
     )
     styl_stopka_notka = ParagraphStyle(
         "StopkaNotka", fontName=_FONT_REGULAR, fontSize=8.3,
-        textColor=szary, spaceBefore=4, leading=11,
+        textColor=podtekst, spaceBefore=4, leading=11,
     )
 
     elementy = []
-    elementy.append(Paragraph("PickPivot — Archiwum Interpretacji Indywidualnych", styl_marka))
-    elementy.append(HRFlowable(width="100%", thickness=1.1, color=granatowy, spaceAfter=10))
+    elementy.append(Paragraph(f"{paleta.NAZWA_MARKI} — Archiwum Interpretacji Indywidualnych", styl_marka))
+    elementy.append(HRFlowable(width="100%", thickness=1.1, color=akcent, spaceAfter=10))
     elementy.append(Paragraph(sygnatura or "—", styl_tytul))
 
     data_fmt = _formatuj_date(data_wyd)
@@ -209,12 +213,12 @@ def _generuj_pdf_interpretacji(sygnatura: str, podatek: str, data_wyd: str,
         elementy.append(Paragraph(akapit, styl_tresc))
 
     elementy.append(Spacer(1, 10))
-    elementy.append(HRFlowable(width="100%", thickness=0.6, color=linia_szr, spaceAfter=6))
+    elementy.append(HRFlowable(width="100%", thickness=0.6, color=linia_jas, spaceAfter=6))
     if link:
         link_bezp = str(link).replace("&", "&amp;")
         elementy.append(Paragraph(f"Źródło: {link_bezp}", styl_stopka_notka))
     elementy.append(Paragraph(
-        "Dokument pobrany z bazy PickPivot. Przed wykorzystaniem zweryfikuj "
+        f"Dokument pobrany z bazy {paleta.NAZWA_MARKI}. Przed wykorzystaniem zweryfikuj "
         "aktualność interpretacji (możliwe uchylenie lub zmiana).",
         styl_stopka_notka,
     ))
@@ -222,7 +226,7 @@ def _generuj_pdf_interpretacji(sygnatura: str, podatek: str, data_wyd: str,
     def _stopka(canvas, doc_):
         canvas.saveState()
         canvas.setFont(_FONT_REGULAR, 8)
-        canvas.setFillColor(szary)
+        canvas.setFillColor(podtekst)
         canvas.drawRightString(A4[0] - 2 * cm, 1.2 * cm, f"Strona {doc_.page}")
         canvas.drawString(2 * cm, 1.2 * cm,
                           f"Wygenerowano: {datetime.now().strftime('%d.%m.%Y %H:%M')}")
@@ -331,6 +335,7 @@ def _renderuj_rozklad_czasowy(arch):
 # SEKCJA 3: PRZEGLADAJ SZCZEGOLOWO (drill-down, dawny Explorer Archiwum)
 # =============================================================================
 def _renderuj_przegladarke(arch):
+    p = paleta.paleta()  # kolory wlasnego HTML musza sledzic aktywny tryb recznie
     st.markdown("### 🔍 Przeglądaj szczegółowo")
     st.caption("Wybierz rok, miesiąc i/lub podatek, żeby zobaczyć listę konkretnych sygnatur.")
 
@@ -396,8 +401,8 @@ def _renderuj_przegladarke(arch):
             naglowek = st.columns(proporcje)
             for col, etykieta in zip(naglowek, ["#", "Sygnatura", "Data wydania", ""]):
                 col.markdown(
-                    f"<div style='font-weight:600;color:#8892A6;font-size:0.82rem;"
-                    f"padding-bottom:6px;border-bottom:1px solid #333;'>{etykieta}</div>",
+                    f"<div style='font-weight:600;color:{p['text2']};font-size:0.82rem;"
+                    f"padding-bottom:6px;border-bottom:1px solid {p['border']};'>{etykieta}</div>",
                     unsafe_allow_html=True,
                 )
 
@@ -405,7 +410,7 @@ def _renderuj_przegladarke(arch):
                 c_num, c_syg, c_data, c_btn = st.columns(proporcje)
 
                 styl_kom = "padding-top:8px;padding-bottom:8px;"
-                c_num.markdown(f"<div style='{styl_kom}color:#8892A6;'>{i + 1}</div>",
+                c_num.markdown(f"<div style='{styl_kom}color:{p['text2']};'>{i + 1}</div>",
                                 unsafe_allow_html=True)
                 c_syg.markdown(f"<div style='{styl_kom}'>{r['Sygnatura']}</div>",
                                 unsafe_allow_html=True)
