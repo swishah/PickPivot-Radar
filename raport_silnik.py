@@ -25,6 +25,16 @@ import utils
 
 PODATKI_WSZYSTKIE = ["PIT", "CIT", "VAT", "AKCYZA"]
 
+# Ruchome okno codziennej synchronizacji (zakres_synchronizacji nizej).
+# Bylo 3 dni; zwiekszone na podstawie obserwacji, ze MF czasem publikuje
+# interpretacje z data wsteczna spoza tego zakresu, co dawalo ubytki w
+# archiwum (dokument istnieje w Eurece, ale wpadl "za pozno", zeby zlapac
+# go w 3-dniowym oknie). Kazdy dzien jest teraz sprawdzany do 10-krotnie
+# w kolejnych uruchomieniach - duplikaty pomijane automatycznie przy
+# zapisie (ON CONFLICT DO NOTHING), wiec szersze okno jest bezpieczne,
+# kosztem nieco wiecej zapytan do API MF kazdego dnia.
+OKNO_SYNCHRONIZACJI_DNI = 10
+
 # Pauza bazowa miedzy kolejnymi probami douzupelnienia (mnozym przez numer proby).
 # Daje zablokowanemu IP czas na odblokowanie po stronie MF. 90s * numer proby:
 # proba 2 -> 180s, proba 3 -> 270s, proba 4 -> 360s.
@@ -736,21 +746,22 @@ def zakres_z_roku_miesiaca(rok: int, miesiac: int) -> tuple:
     return data_od, data_do, opis
 
 
-def zakres_3_dni() -> tuple:
+def zakres_synchronizacji() -> tuple:
     """
-    Zwraca (data_od, data_do, opis_okresu) dla ruchomego okna 3 dni
-    konczacego sie dzisiaj (dzisiaj, wczoraj, przedwczoraj).
+    Zwraca (data_od, data_do, opis_okresu) dla ruchomego okna
+    OKNO_SYNCHRONIZACJI_DNI dni konczacego sie dzisiaj.
 
     Uzywane przez codzienna synchronizacje - kazdy dzien jest sprawdzany
-    3-krotnie w kolejnych uruchomieniach (jako "dzisiaj", potem "wczoraj",
-    potem "przedwczoraj"), co daje odpornosc na interpretacje publikowane
-    przez MF z data wsteczna. Duplikaty sa pomijane automatycznie przy
-    zapisie (ON CONFLICT DO NOTHING), wiec powtorne sprawdzanie tych samych
-    dni jest bezpieczne i nie generuje zduplikowanych rekordow.
+    wielokrotnie w kolejnych uruchomieniach (raz jako "dzisiaj", potem
+    jako "wczoraj" itd., az wypadnie z okna), co daje odpornosc na
+    interpretacje publikowane przez MF z data wsteczna. Duplikaty sa
+    pomijane automatycznie przy zapisie (ON CONFLICT DO NOTHING), wiec
+    powtorne sprawdzanie tych samych dni jest bezpieczne i nie generuje
+    zduplikowanych rekordow.
     """
     from datetime import timedelta
     dzisiaj = datetime.now()
-    data_od = dzisiaj - timedelta(days=2)
+    data_od = dzisiaj - timedelta(days=OKNO_SYNCHRONIZACJI_DNI - 1)
     data_do = dzisiaj
     opis = f"{data_od.strftime('%d.%m')} — {data_do.strftime('%d.%m.%Y')}"
     return data_od, data_do, opis
