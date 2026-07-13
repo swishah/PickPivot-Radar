@@ -5,7 +5,8 @@ interpretacji indywidualnych. Uruchamiany przez GitHub Actions codziennie
 o 3:00 w nocy.
 
 Co robi:
-  1. Wyznacza ruchome okno 3 ostatnich dni (dzisiaj, wczoraj, przedwczoraj).
+  1. Wyznacza ruchome okno ostatnich 10 dni (patrz OKNO_SYNCHRONIZACJI_DNI
+     w raport_silnik.py).
   2. Dla kazdego podatku (PIT, CIT, VAT, AKCYZA) sprawdza API MF dla tego
      okna i dociaga do bazy WYLACZNIE nowe dokumenty (duplikaty pomijane
      automatycznie przez ON CONFLICT DO NOTHING w warstwie zapisu).
@@ -13,12 +14,16 @@ Co robi:
   4. Wysyla krotkie, codzienne powiadomienie mailowe z podsumowaniem.
   5. Zapisuje wpis w historii synchronizacji (widoczny w aplikacji).
 
-Dlaczego okno 3 dni, nie 1 dzien: MF czasem publikuje interpretacje z data
-wsteczna (np. interpretacja z 10.04 pojawia sie w API dopiero 12.04). Dzieki
-oknu 3-dniowemu kazdy dzien jest sprawdzany trzykrotnie w kolejnych
-uruchomieniach (jako "dzisiaj", potem "wczoraj", potem "przedwczoraj"),
-co daje wysoka szanse zlapania takich pozniej opublikowanych dokumentow
-bez koniecznosci przechowywania dodatkowego stanu miedzy uruchomieniami.
+Dlaczego okno 10 dni, nie 1 dzien: MF czasem publikuje interpretacje z data
+wsteczna, i to z opoznieniem wiekszym niz kilka dni (np. interpretacja z
+10.04 pojawia sie w API dopiero kilkanascie dni pozniej). Okno 3-dniowe,
+uzywane wczesniej, dawalo obserwowalne ubytki w archiwum — dokumenty
+istniejace w Eurece, ale publikowane "za pozno", zeby zlapac je w tak
+waskim oknie. Przy oknie 10-dniowym kazdy dzien jest sprawdzany do
+10-krotnie w kolejnych uruchomieniach, co daje znacznie wyzsza szanse
+zlapania pozniej opublikowanych dokumentow, bez koniecznosci
+przechowywania dodatkowego stanu miedzy uruchomieniami. Kosztem jest
+wieksza liczba zapytan do API MF przy kazdym codziennym uruchomieniu.
 
 Wymagane zmienne srodowiskowe:
   SUPABASE_HOST, SUPABASE_PORT, SUPABASE_DB, SUPABASE_USER, SUPABASE_PASSWORD
@@ -79,7 +84,7 @@ def main():
     print("PickPivot — Codzienna Synchronizacja Interpretacji (3:00)")
     print("=" * 70)
 
-    data_od, data_do, opis_okresu = silnik.zakres_3_dni()
+    data_od, data_do, opis_okresu = silnik.zakres_synchronizacji()
     print(f"Okno: {data_od.date()} — {data_do.date()} ({opis_okresu})")
 
     config = _wczytaj_config_supabase()
