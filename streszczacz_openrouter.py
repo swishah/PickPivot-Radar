@@ -81,6 +81,15 @@ def _wyodrebnij_json(tresc: str) -> dict:
             t = t[4:]
         t = t.strip()
 
+    # Zdejmij wiodące linie-etykiety (np. „User Safety: safe”), które niektóre
+    # darmowe modele doklejają przed właściwą treścią — inaczej wyciekłyby do
+    # streszczenia, gdy odpowiedź nie jest w JSON.
+    linie = t.splitlines()
+    poczatek = 0
+    while poczatek < len(linie) and _linia_smieciowa(linie[poczatek]):
+        poczatek += 1
+    t = "\n".join(linie[poczatek:]).strip()
+
     # 1) próba pełnego, poprawnego JSON-a
     i, j = t.find("{"), t.rfind("}")
     if i != -1 and j != -1 and j > i:
@@ -123,6 +132,43 @@ def _po_angielsku(t: str) -> bool:
     low = " " + t.lower() + " "
     trafienia = sum(1 for w in _ANG_SLOWA if (" " + w + " ") in low)
     return trafienia >= 3
+
+
+# Poprawne streszczenie interpretacji jest znacznie dłuższe niż jakikolwiek
+# śmieciowy wtręt; poniżej tej granicy to prawie na pewno nie jest streszczenie.
+_MIN_DLUGOSC = 120
+
+# Wzorce „śmieci” zwracanych czasem przez darmowe modele zamiast treści:
+# etykiety moderacji (np. „User Safety: safe”), odmowy, meta-adnotacje.
+_WZORCE_SMIECI = re.compile(
+    r"(user\s*safety|safety\s*[:=]\s*(safe|unsafe)|content\s*policy|"
+    r"moderation|flagged|as an ai|i (cannot|can't|am unable|will not)|"
+    r"nie mogę (streścić|pomóc|udzielić)|^\s*(safe|unsafe)\s*$)",
+    re.I,
+)
+
+
+def _linia_smieciowa(ln: str) -> bool:
+    return len(ln.strip()) < 40 and bool(_WZORCE_SMIECI.search(ln))
+
+
+def streszczenie_wadliwe(s: str | None) -> bool:
+    """Wspólna kontrola jakości (używana też przez moduł 6 i skrypt automatu).
+    Odrzuca: puste, surowe/ucięte JSON-y, zbyt krótkie, etykiety bezpieczeństwa
+    i odmowy oraz odpowiedzi po angielsku. Taki wpis nadaje się do ponownego
+    wygenerowania."""
+    if not s or not s.strip():
+        return True
+    t = s.strip()
+    if t.startswith("{") or '"streszczenie"' in t or '"temat"' in t:
+        return True
+    if len(t) < _MIN_DLUGOSC:
+        return True
+    if _WZORCE_SMIECI.search(t):
+        return True
+    if _po_angielsku(t):
+        return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -205,18 +251,21 @@ def streszcz_tekst(
 
         wynik = _wyodrebnij_json(tresc)
 
-        # Kontrola języka — jeśli po angielsku, wzmocnij instrukcję i ponów.
-        if _po_angielsku(wynik.get("streszczenie", "")):
-            ostatni_blad = "Model odpowiedział po angielsku."
+        # Kontrola jakości — angielski, etykiety bezpieczeństwa, odmowy,
+        # zbyt krótkie. Jeśli wadliwe: wzmocnij instrukcję i ponów.
+        if streszczenie_wadliwe(wynik.get("streszczenie", "")):
+            ostatni_blad = "Model zwrócił wadliwą/niepełną odpowiedź."
             if i < proby - 1:
                 dopisek_pl = (
-                    "\n\n[PRZYPOMNIENIE] Odpowiedz WYŁĄCZNIE PO POLSKU. "
-                    "Temat i streszczenie po polsku. Nie używaj języka angielskiego."
+                    "\n\n[PRZYPOMNIENIE] Odpowiedz WYŁĄCZNIE po polsku, w formacie "
+                    "JSON o kluczach \"temat\" i \"streszczenie\". Podaj samo "
+                    "merytoryczne streszczenie interpretacji — bez etykiet "
+                    "bezpieczeństwa, ocen, metadanych i komentarzy."
                 )
                 continue
             raise RuntimeError(
-                "Model uporczywie odpowiada po angielsku mimo instrukcji — "
-                "zmień model (np. na openrouter/free) i spróbuj ponownie."
+                "Model uporczywie zwraca wadliwą odpowiedź (np. etykietę "
+                "bezpieczeństwa albo po angielsku) — zmień model i spróbuj ponownie."
             )
 
         return wynik

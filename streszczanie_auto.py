@@ -79,14 +79,7 @@ def _zapewnij_tabele(db: db_core.SupabaseDB) -> None:
 
 
 def _sensowne(s: str | None) -> bool:
-    if not s or not s.strip():
-        return False
-    t = s.strip()
-    if t.startswith("{") or '"streszczenie"' in t or '"temat"' in t:
-        return False
-    if sopen._po_angielsku(t):
-        return False
-    return True
+    return not sopen.streszczenie_wadliwe(s)
 
 
 def _do_streszczenia(db: db_core.SupabaseDB, model: str) -> list[dict]:

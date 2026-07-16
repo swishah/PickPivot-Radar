@@ -113,18 +113,11 @@ def _granice(klucz: str) -> tuple[dt.date, dt.date]:
 # ODCZYT INTERPRETACJI + STRESZCZEŃ
 # ---------------------------------------------------------------------------
 def _sensowne(s: str | None) -> bool:
-    """Czy zapisane streszczenie nadaje się do pokazania. Odrzuca puste,
-    surowy/ucięty JSON (rusztowanie z kluczami) oraz odpowiedzi po angielsku —
-    takie rekordy zostaną potraktowane jak brakujące i można je wygenerować
-    ponownie przyciskiem (auto-naprawa bez czyszczenia bazy)."""
-    if not s or not s.strip():
-        return False
-    t = s.strip()
-    if t.startswith("{") or '"streszczenie"' in t or '"temat"' in t:
-        return False
-    if sopen._po_angielsku(t):
-        return False
-    return True
+    """Czy zapisane streszczenie nadaje się do pokazania. Korzysta ze wspólnej
+    kontroli z klienta OpenRouter (odrzuca puste, surowy/ucięty JSON, zbyt
+    krótkie, etykiety bezpieczeństwa/odmowy oraz angielski). Wadliwe rekordy
+    są traktowane jak brakujące — można je wygenerować ponownie przyciskiem."""
+    return not sopen.streszczenie_wadliwe(s)
 
 
 def _interpretacje(podatek: str, klucz: str, model: str) -> list[dict]:
