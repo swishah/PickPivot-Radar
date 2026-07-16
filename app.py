@@ -8,6 +8,7 @@ import cfo_analyzer
 import raporty
 import eksplorator_archiwum
 import eksplorator_wyrokow
+import zestawienie_tygodniowe
 
 # Logo dolaczone bezposrednio w kodzie (base64) - dziala niezaleznie od
 # tego, gdzie i jak jest hostowana aplikacja, bez osobnego pliku obrazka.
@@ -79,7 +80,8 @@ aktywna_zakladka = st.sidebar.radio(
         "2. Archiwum Interpretacji",
         "3. Analiza Wskaźnikowa",
         "4. Wyroki Sądów (WSA/NSA)",
-        "5. Ustawienia Systemu (Wkrótce)"
+        "5. Zestawienie Tygodniowe",
+        "6. Ustawienia Systemu (Wkrótce)"
     ]
 )
 
@@ -99,6 +101,8 @@ elif aktywna_zakladka.startswith("3."):
     cfo_analyzer.run_module()
 elif aktywna_zakladka.startswith("4."):
     eksplorator_wyrokow.run_module()
+elif aktywna_zakladka.startswith("5."):
+    zestawienie_tygodniowe.pokaz_zestawienie_tygodniowe()
 else:
     # Obsluga zakladek, ktore sa dopiero w planach
     nazwa_modulu = aktywna_zakladka.split('. ')[1] if '. ' in aktywna_zakladka else 'Modul'

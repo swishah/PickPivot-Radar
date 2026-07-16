@@ -45,21 +45,34 @@ MAKS_TYGODNI_NA_LISCIE = 104  # 2 lata wstecz; zwiększ, gdy backfill urośnie
 # ---------------------------------------------------------------------------
 # POŁĄCZENIE Z BAZĄ
 # ---------------------------------------------------------------------------
-# UWAGA — punkt dostosowania: jeżeli masz już w projekcie cache'owane
-# połączenie (archiwum_supabase.py / db_core.py), podmień ciało _polacz()
-# na wywołanie swojego istniejącego helpera. Poniższy wariant jest
-# samowystarczalny i czyta sekcję [supabase] z .streamlit/secrets.toml —
-# dokładnie tę samą, której używa reszta aplikacji.
+# Sekrety czytamy DOKŁADNIE tak, jak reszta aplikacji (archiwum_supabase.py):
+# sekcja [supabase] z kluczami host / port / database / user / password.
+# Host to session pooler Supabase (aws-...-pooler.supabase.com, port 5432),
+# który wymaga SSL — dlatego łączymy się z kontekstem SSL, a gdyby dany
+# endpoint go nie egzekwował, spadamy na połączenie bez SSL (fallback).
+#
+# To osobne, lekkie połączenie obok db_core.SupabaseDB — moduł potrzebuje
+# własnego zapytania SQL (logika tygodni z pobrano_at), którego db_core
+# nie udostępnia jako gotowej metody. Dodatkowe połączenie przez pooler
+# jest bezpieczne (pooler obsługuje wiele równoległych sesji).
 @st.cache_resource(show_spinner=False)
 def _polacz():
-    cfg = st.secrets["supabase"]
-    return pg8000.dbapi.connect(
+    import ssl
+
+    cfg = dict(st.secrets["supabase"])
+    parametry = dict(
         host=cfg["host"],
         port=int(cfg.get("port", 5432)),
-        database=cfg.get("dbname", cfg.get("database", "postgres")),
+        database=cfg.get("database", cfg.get("dbname", "postgres")),
         user=cfg["user"],
         password=cfg["password"],
     )
+    try:
+        ctx = ssl.create_default_context()
+        return pg8000.dbapi.connect(ssl_context=ctx, **parametry)
+    except Exception:
+        # Endpoint nie wymaga/nie akceptuje SSL — próba bez kontekstu.
+        return pg8000.dbapi.connect(**parametry)
 
 
 def _zapytaj(sql: str, parametry: tuple = ()) -> list[tuple]:
