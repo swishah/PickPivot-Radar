@@ -1,0 +1,69 @@
+name: Automat streszczen (OpenRouter)
+
+on:
+  # Harmonogram = mechanizm ponawiania. Skrypt streszcza tylko brakujące
+  # pozycje, więc uruchamiany co godzinę sam „dogania” to, co zostało po
+  # ewentualnym trafieniu limitu. Codzienna synchronizacja interpretacji
+  # kończy się ok. 3:00 UTC — pierwszy przebieg o 4:00, potem co godzinę
+  # do 10:00 UTC (7 prób dziennie). To pokrywa i „zaraz po synchronizacji”,
+  # i „ponów za godzinę”.
+  schedule:
+    - cron: '0 4-10 * * *'
+
+  # Ręczne uruchomienie z zakładki Actions (np. do testu albo doraźnego
+  # dociągnięcia po dodaniu interpretacji).
+  workflow_dispatch:
+    inputs:
+      model:
+        description: 'Model OpenRouter (puste = openrouter/free)'
+        required: false
+        default: ''
+      maks_na_run:
+        description: 'Ile pozycji na jedno uruchomienie'
+        required: false
+        default: '40'
+
+concurrency:
+  # Nie pozwól, żeby dwa przebiegi streszczały równolegle (podwójne zapytania,
+  # kolizje limitu). Nowy czeka lub zostaje pominięty.
+  group: streszczanie-auto
+  cancel-in-progress: false
+
+jobs:
+  streszczaj:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Pobierz repozytorium
+        uses: actions/checkout@v4
+
+      - name: Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Zależności
+        run: |
+          python -m pip install --upgrade pip
+          # Instalujemy z requirements.txt, żeby środowisko było identyczne
+          # jak w aplikacji (psycopg2, requests itd.).
+          pip install -r requirements.txt
+
+      - name: Streszcz brakujące
+        id: streszcz
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          # Jeśli wolisz pojedyncze sekrety zamiast URL-a, odkomentuj i ustaw:
+          # SUPABASE_HOST: ${{ secrets.SUPABASE_HOST }}
+          # SUPABASE_USER: ${{ secrets.SUPABASE_USER }}
+          # SUPABASE_PASSWORD: ${{ secrets.SUPABASE_PASSWORD }}
+          # SUPABASE_PORT: ${{ secrets.SUPABASE_PORT }}
+          # SUPABASE_DB: ${{ secrets.SUPABASE_DB }}
+          OPENROUTER_MODEL: ${{ github.event.inputs.model }}
+          STRESZCZ_MAKS_NA_RUN: ${{ github.event.inputs.maks_na_run }}
+        run: python streszczanie_auto.py
+
+      - name: Podsumowanie
+        if: always()
+        run: echo "Pozostalo do streszczenia po tym przebiegu = ${{ steps.streszcz.outputs.pozostalo }}"
