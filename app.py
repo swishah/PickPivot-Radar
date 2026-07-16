@@ -49,8 +49,19 @@ def _naglowek_logo(wysokosc_px: int = 34):
 st.set_page_config(page_title=paleta.NAZWA_MARKI, page_icon="📗", layout="wide")
 
 # 2. Bezpieczny system autoryzacji
+# Dane logowania NIE sa zaszyte w kodzie — pochodza z Streamlit Secrets:
+#   [auth]
+#   login = "..."
+#   haslo = "..."
+# Dzieki temu repozytorium nie zawiera hasla, a zmiana hasla nie wymaga
+# commita (wystarczy edycja Secrets; aplikacja przeladuje sie sama).
+import hmac
+import time as _time
+
 if 'authenticated' not in st.session_state:
     st.session_state['authenticated'] = False
+if 'proby_logowania' not in st.session_state:
+    st.session_state['proby_logowania'] = 0
 
 if not st.session_state['authenticated']:
     st.markdown("<br><br>", unsafe_allow_html=True)
@@ -64,10 +75,32 @@ if not st.session_state['authenticated']:
         password = st.text_input("Hasło:", type="password")
 
         if st.button("🚀 Zaloguj się", type="primary", use_container_width=True):
-            if username == "DORADCA" and password == "kontotestowe413":
+            try:
+                dobry_login = st.secrets["auth"]["login"]
+                dobre_haslo = st.secrets["auth"]["haslo"]
+            except Exception:
+                st.error(
+                    "Brak sekcji [auth] w Streamlit Secrets. Dodaj w "
+                    "Manage app → Settings → Secrets klucze login i haslo."
+                )
+                st.stop()
+
+            # Spowolnienie po bledach: kazda kolejna nieudana proba wydluza
+            # oczekiwanie (utrudnia zgadywanie hasla automatem).
+            if st.session_state['proby_logowania'] >= 3:
+                _time.sleep(min(2 ** (st.session_state['proby_logowania'] - 2), 30))
+
+            # hmac.compare_digest — porownanie stalo-czasowe (nie zdradza,
+            # ile poczatkowych znakow bylo trafionych).
+            login_ok = hmac.compare_digest(username.encode(), dobry_login.encode())
+            haslo_ok = hmac.compare_digest(password.encode(), dobre_haslo.encode())
+
+            if login_ok and haslo_ok:
                 st.session_state['authenticated'] = True
+                st.session_state['proby_logowania'] = 0
                 st.rerun()
             else:
+                st.session_state['proby_logowania'] += 1
                 st.error("Błędne dane logowania.")
     st.stop()
 
