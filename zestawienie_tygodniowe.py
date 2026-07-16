@@ -25,8 +25,9 @@ from __future__ import annotations
 import datetime as dt
 
 import pandas as pd
-import pg8000.dbapi
 import streamlit as st
+
+import archiwum_supabase
 
 # ---------------------------------------------------------------------------
 # KONFIGURACJA
@@ -45,51 +46,17 @@ MAKS_TYGODNI_NA_LISCIE = 104  # 2 lata wstecz; zwiększ, gdy backfill urośnie
 # ---------------------------------------------------------------------------
 # POŁĄCZENIE Z BAZĄ
 # ---------------------------------------------------------------------------
-# Sekrety czytamy DOKŁADNIE tak, jak reszta aplikacji (archiwum_supabase.py):
-# sekcja [supabase] z kluczami host / port / database / user / password.
-# Host to session pooler Supabase (aws-...-pooler.supabase.com, port 5432),
-# który wymaga SSL — dlatego łączymy się z kontekstem SSL, a gdyby dany
-# endpoint go nie egzekwował, spadamy na połączenie bez SSL (fallback).
+# Korzystamy z TEGO SAMEGO połączenia, którego używa reszta aplikacji:
+# archiwum_supabase._get_db() zwraca cache'owany obiekt db_core.SupabaseDB
+# (psycopg2, session pooler, SSL). Dzięki temu moduł nie wprowadza własnego
+# sterownika ani osobnej konfiguracji — zero rozbieżności z Archiwum.
 #
-# To osobne, lekkie połączenie obok db_core.SupabaseDB — moduł potrzebuje
-# własnego zapytania SQL (logika tygodni z pobrano_at), którego db_core
-# nie udostępnia jako gotowej metody. Dodatkowe połączenie przez pooler
-# jest bezpieczne (pooler obsługuje wiele równoległych sesji).
-@st.cache_resource(show_spinner=False)
-def _polacz():
-    import ssl
-
-    cfg = dict(st.secrets["supabase"])
-    parametry = dict(
-        host=cfg["host"],
-        port=int(cfg.get("port", 5432)),
-        database=cfg.get("database", cfg.get("dbname", "postgres")),
-        user=cfg["user"],
-        password=cfg["password"],
-    )
-    try:
-        ctx = ssl.create_default_context()
-        return pg8000.dbapi.connect(ssl_context=ctx, **parametry)
-    except Exception:
-        # Endpoint nie wymaga/nie akceptuje SSL — próba bez kontekstu.
-        return pg8000.dbapi.connect(**parametry)
-
-
-def _zapytaj(sql: str, parametry: tuple = ()) -> list[tuple]:
-    """Wykonuje SELECT; przy zerwanym połączeniu czyści cache i ponawia raz."""
-    for proba in (1, 2):
-        conn = _polacz()
-        try:
-            kur = conn.cursor()
-            kur.execute(sql, parametry)
-            wynik = kur.fetchall()
-            kur.close()
-            return wynik
-        except Exception:
-            _polacz.clear()
-            if proba == 2:
-                raise
-    return []
+# SupabaseDB.wykonaj(sql, params, fetch=True) zwraca listę słowników
+# (RealDictCursor). Placeholdery to %s (styl psycopg2) — nasze zapytania
+# już go używają.
+def _zapytaj(sql: str, parametry: tuple | None = None) -> list[dict]:
+    db = archiwum_supabase._get_db()
+    return db.wykonaj(sql, parametry, fetch=True)
 
 
 # ---------------------------------------------------------------------------
@@ -125,12 +92,12 @@ def _lista_tygodni() -> list[dt.date]:
     najstarsza = biezacy
     try:
         w = _zapytaj(
-            "SELECT MIN(NULLIF(data_wyd, '')) FROM dokumenty "
+            "SELECT MIN(NULLIF(data_wyd, '')) AS m FROM dokumenty "
             "WHERE podatek = ANY(%s)",
             (PODATKI,),
         )
-        if w and w[0][0]:
-            najstarsza = _poniedzialek(dt.date.fromisoformat(str(w[0][0])[:10]))
+        if w and w[0].get("m"):
+            najstarsza = _poniedzialek(dt.date.fromisoformat(str(w[0]["m"])[:10]))
     except Exception:
         pass  # brak danych — pokażemy sam bieżący tydzień
 
@@ -178,12 +145,14 @@ def _dokumenty_tygodnia(podatek: str, pon_iso: str, nie_iso: str) -> pd.DataFram
         ORDER BY data_wyd, sygnatura
     """
     wiersze = _zapytaj(sql, (podatek, pon_iso, nie_iso, pon_iso, nie_iso, pon_iso))
-    df = pd.DataFrame(
-        wiersze, columns=["id", "sygnatura", "data_wyd", "pobrano_dnia", "link"]
-    )
-    if df.empty:
+
+    kolumny = ["id", "sygnatura", "data_wyd", "pobrano_dnia", "link"]
+    if not wiersze:
+        df = pd.DataFrame(columns=kolumny)
         df["spozniona"] = pd.Series(dtype=bool)
         return df
+
+    df = pd.DataFrame(wiersze, columns=kolumny)
 
     # "Spóźniona" W TYM WIDOKU = wydana przed poniedziałkiem wybranego tygodnia
     # (czyli obecna tu wyłącznie dlatego, że w tym tygodniu trafiła do bazy).
