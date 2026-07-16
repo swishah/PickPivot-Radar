@@ -112,6 +112,21 @@ def _granice(klucz: str) -> tuple[dt.date, dt.date]:
 # ---------------------------------------------------------------------------
 # ODCZYT INTERPRETACJI + STRESZCZEŃ
 # ---------------------------------------------------------------------------
+def _sensowne(s: str | None) -> bool:
+    """Czy zapisane streszczenie nadaje się do pokazania. Odrzuca puste,
+    surowy/ucięty JSON (rusztowanie z kluczami) oraz odpowiedzi po angielsku —
+    takie rekordy zostaną potraktowane jak brakujące i można je wygenerować
+    ponownie przyciskiem (auto-naprawa bez czyszczenia bazy)."""
+    if not s or not s.strip():
+        return False
+    t = s.strip()
+    if t.startswith("{") or '"streszczenie"' in t or '"temat"' in t:
+        return False
+    if sopen._po_angielsku(t):
+        return False
+    return True
+
+
 def _interpretacje(podatek: str, klucz: str, model: str) -> list[dict]:
     pon, nd = _granice(klucz)
     rows = _zapytaj(
@@ -133,8 +148,10 @@ def _interpretacje(podatek: str, klucz: str, model: str) -> list[dict]:
     )
     for r in rows:
         r["pozny"] = str(r["data_wyd"]) < pon.isoformat()
-        r["temat"] = r.get("s_temat") or ""
-        r["streszczenie"] = r.get("s_streszcz") or "— (brak streszczenia)"
+        s = r.get("s_streszcz")
+        r["_ma"] = _sensowne(s)
+        r["temat"] = (r.get("s_temat") or "") if r["_ma"] else ""
+        r["streszczenie"] = s if r["_ma"] else "— (brak streszczenia)"
     return rows
 
 
@@ -184,7 +201,7 @@ def _zakladka(podatek: str, model: str, klucz_api: str | None) -> None:
         st.info("Brak interpretacji przypisanych do tego tygodnia.")
         return
 
-    brak = [r for r in rekordy if not r.get("s_streszcz")]
+    brak = [r for r in rekordy if not r.get("_ma")]
     n_pozne = sum(1 for r in rekordy if r.get("pozny"))
 
     k1, k2, k3 = st.columns(3)
