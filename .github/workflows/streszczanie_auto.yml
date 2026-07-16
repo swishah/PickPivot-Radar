@@ -2,13 +2,33 @@ name: Automat streszczen (OpenRouter)
 
 on:
   # Harmonogram = mechanizm ponawiania. Skrypt streszcza tylko brakujące
-  # pozycje, więc uruchamiany co godzinę sam „dogania” to, co zostało po
-  # ewentualnym trafieniu limitu. Codzienna synchronizacja interpretacji
-  # kończy się ok. 3:00 UTC — pierwszy przebieg o 4:00, potem co godzinę
-  # do 10:00 UTC (7 prób dziennie). To pokrywa i „zaraz po synchronizacji”,
-  # i „ponów za godzinę”.
+  # pozycje, więc każdy przebieg dogania to, co zostało.
+  #
+  # 7 przebiegów dziennie, średnio co ~3,5 h. Trzy z nich w oknie 7:30–15:30
+  # CZASU POLSKIEGO (lato, CEST = UTC+2). Cron działa w UTC, więc godziny
+  # są przeliczone (–2 h względem czasu polskiego letniego):
+  #
+  #   Czas polski (lato)  ->  UTC (cron)      w oknie 7:30–15:30?
+  #   01:00               ->  23:00 (dzień wcześniej)
+  #   04:00               ->  02:00
+  #   07:30               ->  05:30           TAK
+  #   11:00               ->  09:00           TAK
+  #   14:30               ->  12:30           TAK
+  #   18:00               ->  16:00
+  #   21:30               ->  19:30
+  #
+  # UWAGA (czas zimowy): cron jest stały w UTC i nie zna zmiany czasu.
+  # Zimą (CET = UTC+1) te same wpisy wypadną o godzinę WCZEŚNIEJ czasu
+  # polskiego (okno 7:30–15:30 przesunie się na 6:30–14:30). Liczba i rytm
+  # przebiegów pozostają bez zmian.
   schedule:
-    - cron: '0 4-10 * * *'
+    - cron: '0 23 * * *'
+    - cron: '0 2 * * *'
+    - cron: '30 5 * * *'
+    - cron: '0 9 * * *'
+    - cron: '30 12 * * *'
+    - cron: '0 16 * * *'
+    - cron: '30 19 * * *'
 
   # Ręczne uruchomienie z zakładki Actions (np. do testu albo doraźnego
   # dociągnięcia po dodaniu interpretacji).
