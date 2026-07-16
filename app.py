@@ -11,6 +11,7 @@ import eksplorator_wyrokow
 import zestawienie_tygodniowe
 import zestawienie_automat
 import monitoring_fraz_ui
+import monitoring_branz_ui
 
 # Logo dolaczone bezposrednio w kodzie (base64) - dziala niezaleznie od
 # tego, gdzie i jak jest hostowana aplikacja, bez osobnego pliku obrazka.
@@ -118,7 +119,8 @@ aktywna_zakladka = st.sidebar.radio(
         "5. Zestawienie Tygodniowe",
         "6. Zestawienie Tygodniowe Automat (próbna)",
         "7. Monitoring Fraz",
-        "8. Ustawienia Systemu (Wkrótce)"
+        "8. Monitoring Branż",
+        "9. Ustawienia Systemu (Wkrótce)"
     ]
 )
 
@@ -144,6 +146,8 @@ elif aktywna_zakladka.startswith("6."):
     zestawienie_automat.pokaz_zestawienie_automat()
 elif aktywna_zakladka.startswith("7."):
     monitoring_fraz_ui.pokaz_monitoring_fraz()
+elif aktywna_zakladka.startswith("8."):
+    monitoring_branz_ui.pokaz_monitoring_branz()
 else:
     # Obsluga zakladek, ktore sa dopiero w planach
     nazwa_modulu = aktywna_zakladka.split('. ')[1] if '. ' in aktywna_zakladka else 'Modul'

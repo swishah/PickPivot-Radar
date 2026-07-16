@@ -37,6 +37,31 @@ MODELE_DO_WYBORU = [
 #  bywały urywane w połowie zdania, co psuło JSON).
 MAKS_TOKENOW = 2200
 
+# Zamknięta taksonomia branż — model MUSI wybierać z tej listy (swobodne
+# nazewnictwo uniemożliwiłoby dopasowanie subskrypcji: raz „ciepłownictwo”,
+# raz „branża grzewcza”). Modyfikując listę pamiętaj, że subskrypcje w bazie
+# odwołują się do tych dokładnych wartości.
+BRANZE = [
+    "ciepłownicza",
+    "wodno-kanalizacyjna",
+    "energetyczna",
+    "OZE i fotowoltaika",
+    "budowlana i deweloperska",
+    "nieruchomości",
+    "transportowa i logistyczna",
+    "motoryzacyjna",
+    "IT i telekomunikacja",
+    "finansowa i ubezpieczeniowa",
+    "medyczna i farmaceutyczna",
+    "rolnicza i spożywcza",
+    "handlowa",
+    "produkcyjna",
+    "gastronomiczna i hotelarska",
+    "edukacyjna",
+    "samorządowa (JST)",
+    "inna",
+]
+
 _SYSTEM = (
     "Jesteś asystentem polskiego doradcy podatkowego. Streszczasz polskie "
     "interpretacje indywidualne WIERNIE, wyłącznie na podstawie dostarczonej "
@@ -50,7 +75,12 @@ _SYSTEM = (
     '  "streszczenie" — ciągła proza po polsku (NIE lista), maksymalnie 12 '
     "zdań, ujmująca: stan faktyczny lub zdarzenie przyszłe, pytanie "
     "wnioskodawcy, jego stanowisko oraz stanowisko organu z kluczowym "
-    "uzasadnieniem."
+    "uzasadnieniem,\n"
+    '  "branze"       — lista 1–2 branż, których dotyczy działalność '
+    "wnioskodawcy opisana w interpretacji. Oceniaj PO TREŚCI (czym zajmuje "
+    "się wnioskodawca), nie po słowach kluczowych. Wybieraj WYŁĄCZNIE z tej "
+    "listy (dokładna pisownia): " + "; ".join(BRANZE) + ". Jeżeli żadna nie "
+    'pasuje wyraźnie, użyj "inna".'
 )
 
 
@@ -71,6 +101,22 @@ def _wytnij_pole(t: str, klucz: str) -> str:
     if not m:
         m = re.search(r'"' + klucz + r'"\s*:\s*"(.*)$', t, re.S)
     return _odkoduj(m.group(1)) if m else ""
+
+
+def _waliduj_branze(surowe) -> list[str]:
+    """Przycina do zamkniętej taksonomii (dopasowanie bez wielkości liter);
+    wartości spoza listy odrzuca. Maksymalnie 2 branże."""
+    if not surowe:
+        return []
+    if isinstance(surowe, str):
+        surowe = re.split(r"[,;]", surowe)
+    mapa = {b.lower(): b for b in BRANZE}
+    wynik = []
+    for s in surowe:
+        b = mapa.get(str(s).strip().strip('"').lower())
+        if b and b not in wynik:
+            wynik.append(b)
+    return wynik[:2]
 
 
 def _wyodrebnij_json(tresc: str) -> dict:
@@ -96,19 +142,22 @@ def _wyodrebnij_json(tresc: str) -> dict:
         try:
             d = json.loads(t[i:j + 1])
             return {"temat": str(d.get("temat", "")).strip(),
-                    "streszczenie": str(d.get("streszczenie", "")).strip()}
+                    "streszczenie": str(d.get("streszczenie", "")).strip(),
+                    "branze": _waliduj_branze(d.get("branze"))}
         except Exception:
             pass
 
     # 2) ratunkowa ekstrakcja pól (obsługuje ucięty JSON — bez rusztowania)
     temat = _wytnij_pole(t, "temat")
     streszcz = _wytnij_pole(t, "streszczenie")
+    m_br = re.search(r'"branze"\s*:\s*\[(.*?)\]', t, re.S)
+    branze = _waliduj_branze(m_br.group(1)) if m_br else []
     if streszcz:
-        return {"temat": temat, "streszczenie": streszcz}
+        return {"temat": temat, "streszczenie": streszcz, "branze": branze}
 
     # 3) ostatecznie: cała treść jako streszczenie, ale BEZ nagłówków JSON
     czysty = re.sub(r'^\s*\{?\s*"?(temat|streszczenie)"?\s*:\s*"?', "", t)
-    return {"temat": temat, "streszczenie": _odkoduj(czysty)}
+    return {"temat": temat, "streszczenie": _odkoduj(czysty), "branze": branze}
 
 
 # ---------------------------------------------------------------------------

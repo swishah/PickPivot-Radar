@@ -70,6 +70,11 @@ def _zapewnij_tabele() -> bool:
         )
         """
     )
+    # Kolumna branż (klasyfikacja treściowa) — dokładana bezpiecznie do
+    # istniejącej tabeli; starsze wpisy mają '' (bez branży).
+    _wykonaj(
+        "ALTER TABLE streszczenia_auto ADD COLUMN IF NOT EXISTS branze TEXT DEFAULT ''"
+    )
     return True
 
 
@@ -125,7 +130,8 @@ def _interpretacje(podatek: str, klucz: str, model: str) -> list[dict]:
     rows = _zapytaj(
         """
         SELECT d.id, d.sygnatura, d.data_wyd, d.tekst,
-               s.temat AS s_temat, s.streszczenie AS s_streszcz
+               s.temat AS s_temat, s.streszczenie AS s_streszcz,
+               COALESCE(s.branze, '') AS s_branze
         FROM dokumenty d
         LEFT JOIN streszczenia_auto s
                ON s.dokument_id = d.id AND s.model = %s
@@ -144,22 +150,24 @@ def _interpretacje(podatek: str, klucz: str, model: str) -> list[dict]:
         s = r.get("s_streszcz")
         r["_ma"] = _sensowne(s)
         r["temat"] = (r.get("s_temat") or "") if r["_ma"] else ""
+        if r["_ma"] and r.get("s_branze"):
+            r["temat"] = (r["temat"] + f"  〔branża: {r['s_branze']}〕").strip()
         r["streszczenie"] = s if r["_ma"] else "— (brak streszczenia)"
     return rows
 
 
 def _zapisz_streszczenie(dok_id: str, podatek: str, model: str,
-                         temat: str, streszcz: str) -> None:
+                         temat: str, streszcz: str, branze: str = "") -> None:
     _wykonaj(
         """
         INSERT INTO streszczenia_auto
-            (dokument_id, podatek, model, temat, streszczenie, wygenerowano)
-        VALUES (%s,%s,%s,%s,%s,%s)
+            (dokument_id, podatek, model, temat, streszczenie, branze, wygenerowano)
+        VALUES (%s,%s,%s,%s,%s,%s,%s)
         ON CONFLICT (dokument_id, model) DO UPDATE SET
             temat=EXCLUDED.temat, streszczenie=EXCLUDED.streszczenie,
-            wygenerowano=EXCLUDED.wygenerowano
+            branze=EXCLUDED.branze, wygenerowano=EXCLUDED.wygenerowano
         """,
-        (dok_id, podatek, model, temat, streszcz,
+        (dok_id, podatek, model, temat, streszcz, branze,
          dt.datetime.now().isoformat(timespec="seconds")),
     )
 
@@ -241,7 +249,8 @@ def _streszczaj(pozycje: list[dict], podatek: str, model: str, klucz_api: str) -
                 api_key=klucz_api, model=model,
             )
             _zapisz_streszczenie(r["id"], podatek, model,
-                                 wynik["temat"], wynik["streszczenie"])
+                                 wynik["temat"], wynik["streszczenie"],
+                                 ", ".join(wynik.get("branze") or []))
             ok += 1
         except Exception as e:
             bledy += 1

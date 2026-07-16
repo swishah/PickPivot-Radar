@@ -81,6 +81,9 @@ def _zapewnij_tabele(db: db_core.SupabaseDB) -> None:
         )
         """
     )
+    db.wykonaj(
+        "ALTER TABLE streszczenia_auto ADD COLUMN IF NOT EXISTS branze TEXT DEFAULT ''"
+    )
 
 
 def _sensowne(s: str | None) -> bool:
@@ -110,14 +113,15 @@ def _zapisz(db: db_core.SupabaseDB, r: dict, model: str, wynik: dict) -> None:
     db.wykonaj(
         """
         INSERT INTO streszczenia_auto
-            (dokument_id, podatek, model, temat, streszczenie, wygenerowano)
-        VALUES (%s,%s,%s,%s,%s,%s)
+            (dokument_id, podatek, model, temat, streszczenie, branze, wygenerowano)
+        VALUES (%s,%s,%s,%s,%s,%s,%s)
         ON CONFLICT (dokument_id, model) DO UPDATE SET
             temat=EXCLUDED.temat, streszczenie=EXCLUDED.streszczenie,
-            wygenerowano=EXCLUDED.wygenerowano
+            branze=EXCLUDED.branze, wygenerowano=EXCLUDED.wygenerowano
         """,
         (r["id"], r["podatek"], model, wynik.get("temat", ""),
-         wynik.get("streszczenie", ""), dt.datetime.now().isoformat(timespec="seconds")),
+         wynik.get("streszczenie", ""), ", ".join(wynik.get("branze") or []),
+         dt.datetime.now().isoformat(timespec="seconds")),
     )
 
 
