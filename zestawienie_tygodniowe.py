@@ -2,20 +2,27 @@
 """
 MODUŁ: Zestawienie Tygodniowe — Skaner Doradca
 ===============================================================================
-Cztery zakładki (PIT / CIT / VAT / AKCYZA), każda z listą tygodni (pn–pt).
+Cztery zakładki (PIT / CIT / VAT / AKCYZA).
 
-Dla wybranego tygodnia i podatku wgrywasz JEDEN plik ze streszczeniem
-wygenerowany przez GPT "Tygodniowy Research" (PDF lub DOCX). Moduł zapisuje
-plik w bazie (przetrwa odświeżenie i restart) i wyświetla jego treść —
-to jest właściwe zestawienie tygodnia. Surowe metadane (sygnatura/data/link)
-NIE są już głównym widokiem; pozostają jedynie jako opcjonalna kontrola
-kompletności (ile interpretacji baza ma dla tego tygodnia — do sprawdzenia,
-czy research je wszystkie objął).
+OBIEG:
+  1. Wgrywasz plik z GPT „Tygodniowy Research” (DOCX zalecany; PDF działa
+     najlepiej-jak-się-da). NIE wybierasz tygodnia przy wgrywaniu.
+  2. Moduł parsuje tabelę pliku (L.p. | Sygnatura | Data wydania | Temat |
+     Streszczenie) i KAŻDĄ interpretację przypisuje do tygodnia JEJ daty
+     wydania (tydzień kalendarzowy pn–nd).
+  3. Wybierasz tydzień — moduł składa tabelę wszystkich interpretacji z tego
+     tygodnia.
 
-DANE:
-  * Streszczenia: tabela streszczenia_tygodniowe (tworzona automatycznie).
-  * Kontrola kompletności korzysta z kolumny dokumenty.pobrano_at
-    (patrz migracja_pobrano_at.sql) do rozróżnienia publikacji wstecznych.
+PUBLIKACJE OPÓŹNIONE (zasada uzgodniona wcześniej):
+  * „Okres researchu” = tydzień najświeższej interpretacji w pliku.
+  * Interpretacja, której data wydania należy do WCZEŚNIEJSZEGO tygodnia niż
+    okres researchu, trafia do swojego właściwego (wcześniejszego) tygodnia,
+    a w tygodniu researchu pokazywana jest DODATKOWO — podświetlona na zielono
+    („publikacja opóźniona”).
+
+DANE: tabela interpretacje_streszczenia (tworzona automatycznie).
+Tydzień jako klucz ISO „RRRR-Www” (porównania łańcuchowe są chronologiczne,
+bo rok i numer tygodnia są wyzerowane do stałej szerokości).
 ===============================================================================
 """
 
@@ -23,7 +30,9 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import html
 import io
+import re
 
 import streamlit as st
 
@@ -38,367 +47,397 @@ ZIELEN_GLOWNA = "#386520"
 ZIELEN_TLO = "#dcefd8"
 ZIELEN_TEKST = "#1b3d0f"
 
-MAKS_TYGODNI_NA_LISCIE = 104  # 2 lata wstecz; zwiększ, gdy backfill urośnie
-
-MIME = {
-    "pdf": "application/pdf",
-    "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-}
-
 
 # ---------------------------------------------------------------------------
-# POŁĄCZENIE Z BAZĄ
+# POŁĄCZENIE (to samo co reszta aplikacji)
 # ---------------------------------------------------------------------------
-# To samo połączenie, którego używa reszta aplikacji: archiwum_supabase._get_db()
-# zwraca cache'owany db_core.SupabaseDB (psycopg2, session pooler, SSL).
-# wykonaj(sql, params, fetch=True) -> lista słowników; fetch=False -> rowcount.
 def _zapytaj(sql: str, parametry: tuple | None = None) -> list[dict]:
-    db = archiwum_supabase._get_db()
-    return db.wykonaj(sql, parametry, fetch=True)
+    return archiwum_supabase._get_db().wykonaj(sql, parametry, fetch=True)
 
 
 def _wykonaj(sql: str, parametry: tuple | None = None) -> int:
-    db = archiwum_supabase._get_db()
-    return db.wykonaj(sql, parametry, fetch=False)
+    return archiwum_supabase._get_db().wykonaj(sql, parametry, fetch=False)
 
 
-# ---------------------------------------------------------------------------
-# TABELA STRESZCZEŃ — tworzona automatycznie (raz na sesję)
-# ---------------------------------------------------------------------------
 @st.cache_resource(show_spinner=False)
 def _zapewnij_tabele() -> bool:
-    """CREATE TABLE IF NOT EXISTS — analogicznie do db_core.inicjalizuj_schemat.
-    Klucz (tydzien_klucz, podatek) jest UNIQUE, żeby upsert nadpisywał
-    poprzedni plik dla tego samego tygodnia i podatku zamiast go duplikować."""
     _wykonaj(
         """
-        CREATE TABLE IF NOT EXISTS streszczenia_tygodniowe (
-            id            SERIAL PRIMARY KEY,
-            tydzien_klucz TEXT NOT NULL,
-            podatek       TEXT NOT NULL,
-            data_od       TEXT NOT NULL,
-            data_do       TEXT NOT NULL,
-            nazwa_pliku   TEXT NOT NULL,
-            typ_pliku     TEXT NOT NULL,
-            plik          BYTEA NOT NULL,
-            tekst         TEXT DEFAULT '',
-            wgrano        TEXT NOT NULL,
-            UNIQUE (tydzien_klucz, podatek)
+        CREATE TABLE IF NOT EXISTS interpretacje_streszczenia (
+            id               SERIAL PRIMARY KEY,
+            podatek          TEXT NOT NULL,
+            sygnatura        TEXT NOT NULL,
+            data_wyd         TEXT NOT NULL,     -- YYYY-MM-DD
+            tydzien_wydania  TEXT NOT NULL,     -- RRRR-Www (tydzień daty wydania)
+            tydzien_research TEXT NOT NULL,     -- RRRR-Www (okres pliku researchu)
+            temat            TEXT DEFAULT '',
+            streszczenie     TEXT DEFAULT '',
+            nazwa_pliku      TEXT DEFAULT '',
+            wgrano           TEXT NOT NULL,
+            UNIQUE (podatek, sygnatura)
         )
         """
+    )
+    _wykonaj(
+        "CREATE INDEX IF NOT EXISTS idx_is_tyg "
+        "ON interpretacje_streszczenia (podatek, tydzien_wydania)"
     )
     return True
 
 
 # ---------------------------------------------------------------------------
-# TYGODNIE (pn–pt)
+# TYGODNIE — pn–nd (pełny tydzień kalendarzowy = tydzień ISO)
 # ---------------------------------------------------------------------------
 def _poniedzialek(d: dt.date) -> dt.date:
     return d - dt.timedelta(days=d.weekday())
 
 
-def _granice_tygodnia(pon: dt.date) -> tuple[dt.date, dt.date, dt.date]:
-    """(poniedziałek, piątek, niedziela). Etykieta pn–pt, ale technicznie
-    kubełek domyka niedziela, żeby nic z weekendową datą nie wypadło."""
-    return pon, pon + dt.timedelta(days=4), pon + dt.timedelta(days=6)
+def _niedziela(d: dt.date) -> dt.date:
+    return _poniedzialek(d) + dt.timedelta(days=6)
 
 
-def _klucz_tygodnia(pon: dt.date) -> str:
-    rok, nr, _ = pon.isocalendar()
+def _klucz_tygodnia(d: dt.date) -> str:
+    rok, nr, _ = d.isocalendar()
     return f"{rok}-W{nr:02d}"
 
 
-def _etykieta_tygodnia(pon: dt.date) -> str:
-    _, pt, _ = _granice_tygodnia(pon)
-    nr = pon.isocalendar()[1]
-    return f"Tydzień {nr:02d}/{pon.year}  ·  {pon:%d.%m} – {pt:%d.%m.%Y} (pn–pt)"
-
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def _lista_tygodni() -> list[dt.date]:
-    """Poniedziałki od bieżącego tygodnia wstecz do najstarszego dokumentu."""
-    dzis = dt.date.today()
-    biezacy = _poniedzialek(dzis)
-
-    najstarsza = biezacy
+def _monday_z_klucza(klucz: str) -> dt.date | None:
     try:
-        w = _zapytaj(
-            "SELECT MIN(NULLIF(data_wyd, '')) AS m FROM dokumenty "
-            "WHERE podatek = ANY(%s)",
-            (PODATKI,),
-        )
-        if w and w[0].get("m"):
-            najstarsza = _poniedzialek(dt.date.fromisoformat(str(w[0]["m"])[:10]))
+        rok, wk = klucz.split("-W")
+        return dt.date.fromisocalendar(int(rok), int(wk), 1)
     except Exception:
-        pass
+        return None
 
-    tygodnie: list[dt.date] = []
-    pon = biezacy
-    while pon >= najstarsza and len(tygodnie) < MAKS_TYGODNI_NA_LISCIE:
-        tygodnie.append(pon)
-        pon -= dt.timedelta(days=7)
-    return tygodnie
+
+def _etykieta_tygodnia(klucz: str) -> str:
+    pon = _monday_z_klucza(klucz)
+    if not pon:
+        return klucz
+    nd = pon + dt.timedelta(days=6)
+    return f"Tydzień {pon.isocalendar()[1]:02d}/{pon.year}  ·  {pon:%d.%m} – {nd:%d.%m.%Y} (pn–nd)"
 
 
 # ---------------------------------------------------------------------------
-# KONTROLA KOMPLETNOŚCI (opcjonalna)
+# PARSOWANIE PLIKU
 # ---------------------------------------------------------------------------
-@st.cache_data(ttl=300, show_spinner=False)
-def _licznik_tygodnia(podatek: str, pon_iso: str, nie_iso: str) -> tuple[int, int]:
-    """(wydane_w_tygodniu, dograne_w_tygodniu_ale_starsze)."""
-    wydane = _zapytaj(
-        "SELECT COUNT(*) AS n FROM dokumenty "
-        "WHERE podatek = %s AND data_wyd >= %s AND data_wyd <= %s",
-        (podatek, pon_iso, nie_iso),
+def _parsuj_date(s: str) -> dt.date | None:
+    s = (s or "").strip()
+    for fmt in ("%d.%m.%Y", "%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y"):
+        try:
+            return dt.datetime.strptime(s[:10], fmt).date()
+        except Exception:
+            pass
+    m = re.search(r"(\d{2})[.\-/](\d{2})[.\-/](\d{4})", s)
+    if m:
+        try:
+            return dt.date(int(m[3]), int(m[2]), int(m[1]))
+        except Exception:
+            return None
+    m = re.search(r"(\d{4})-(\d{2})-(\d{2})", s)
+    if m:
+        try:
+            return dt.date(int(m[1]), int(m[2]), int(m[3]))
+        except Exception:
+            return None
+    return None
+
+
+def _parsuj_docx(bajty: bytes) -> list[dict]:
+    from docx import Document
+    doc = Document(io.BytesIO(bajty))
+    if not doc.tables:
+        return []
+    tab = doc.tables[0]
+    naglowki = [c.text.strip().lower() for c in tab.rows[0].cells]
+
+    def idx(*klucze):
+        for i, h in enumerate(naglowki):
+            if any(k in h for k in klucze):
+                return i
+        return None
+
+    i_syg = idx("sygnatura", "znak")
+    i_dat = idx("data")
+    i_tem = idx("temat", "przedmiot")
+    i_str = idx("streszczenie", "omówienie", "omowienie", "opis")
+    i_lp = idx("l.p", "lp", "l. p")
+
+    def g(c, i):
+        return c[i].strip() if (i is not None and i < len(c)) else ""
+
+    wiersze = []
+    for row in tab.rows[1:]:
+        c = [x.text for x in row.cells]
+        syg, dat = g(c, i_syg), g(c, i_dat)
+        if not syg and not dat:
+            continue
+        wiersze.append({
+            "lp": g(c, i_lp),
+            "sygnatura": syg,
+            "data_raw": dat,
+            "temat": g(c, i_tem),
+            "streszczenie": g(c, i_str),
+        })
+    return wiersze
+
+
+def _parsuj_pdf(bajty: bytes) -> list[dict]:
+    """Best-effort dla PDF: wyłapuje wiersze zaczynające się sygnaturą i datą.
+    DOCX jest znacznie pewniejszy — PDF traktujemy jako awaryjny."""
+    from pypdf import PdfReader
+    reader = PdfReader(io.BytesIO(bajty))
+    tekst = "\n".join((s.extract_text() or "") for s in reader.pages)
+    wiersze = []
+    wzor = re.compile(
+        r"([0-9]{3,4}-[A-ZĄĆĘŁŃÓŚŹŻ0-9.\-]+)\s+"       # sygnatura
+        r"(\d{2}[.\-/]\d{2}[.\-/]\d{4})\s+"            # data
+        r"(.+?)(?=(?:[0-9]{3,4}-[A-ZĄĆĘŁŃÓŚŹŻ0-9.\-]+\s+\d{2}[.\-/]\d{2}[.\-/]\d{4})|$)",
+        re.S,
     )
-    dograne = _zapytaj(
-        "SELECT COUNT(*) AS n FROM dokumenty "
-        "WHERE podatek = %s AND pobrano_at >= %s::date "
-        "AND pobrano_at < (%s::date + 1) AND data_wyd < %s",
-        (podatek, pon_iso, nie_iso, pon_iso),
-    )
-    return (int(wydane[0]["n"]) if wydane else 0,
-            int(dograne[0]["n"]) if dograne else 0)
+    for m in wzor.finditer(tekst):
+        reszta = re.sub(r"\s+", " ", m[3]).strip()
+        wiersze.append({
+            "lp": "", "sygnatura": m[1].strip(), "data_raw": m[2].strip(),
+            "temat": "", "streszczenie": reszta,
+        })
+    return wiersze
+
+
+def _parsuj_plik(nazwa: str, bajty: bytes) -> list[dict]:
+    if nazwa.lower().endswith(".docx"):
+        return _parsuj_docx(bajty)
+    if nazwa.lower().endswith(".pdf"):
+        return _parsuj_pdf(bajty)
+    return []
 
 
 # ---------------------------------------------------------------------------
-# STRESZCZENIA — odczyt / zapis / usunięcie / ekstrakcja tekstu
+# ZAPIS PO PARSOWANIU — przypisanie do tygodni
 # ---------------------------------------------------------------------------
-def _pobierz_streszczenie(podatek: str, klucz: str) -> dict | None:
+def _zapisz_interpretacje(podatek: str, nazwa: str, wiersze: list[dict]) -> tuple[int, int, str | None]:
+    """Zwraca (zapisane, pominiete_bez_daty, tydzien_research_klucz)."""
+    daty = [_parsuj_date(w["data_raw"]) for w in wiersze]
+    prawidlowe = [d for d in daty if d]
+    if not prawidlowe:
+        return 0, len(wiersze), None
+
+    tydzien_research = _klucz_tygodnia(max(prawidlowe))  # tydzień najświeższej
+    teraz = dt.datetime.now().isoformat(timespec="seconds")
+
+    zapisane, pominiete = 0, 0
+    for w, d in zip(wiersze, daty):
+        if not d:
+            pominiete += 1
+            continue
+        _wykonaj(
+            """
+            INSERT INTO interpretacje_streszczenia
+                (podatek, sygnatura, data_wyd, tydzien_wydania, tydzien_research,
+                 temat, streszczenie, nazwa_pliku, wgrano)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            ON CONFLICT (podatek, sygnatura) DO UPDATE SET
+                data_wyd         = EXCLUDED.data_wyd,
+                tydzien_wydania  = EXCLUDED.tydzien_wydania,
+                tydzien_research = EXCLUDED.tydzien_research,
+                temat            = EXCLUDED.temat,
+                streszczenie     = EXCLUDED.streszczenie,
+                nazwa_pliku      = EXCLUDED.nazwa_pliku,
+                wgrano           = EXCLUDED.wgrano
+            """,
+            (podatek, w["sygnatura"], d.isoformat(), _klucz_tygodnia(d),
+             tydzien_research, w.get("temat", ""), w.get("streszczenie", ""),
+             nazwa, teraz),
+        )
+        zapisane += 1
+    return zapisane, pominiete, tydzien_research
+
+
+# ---------------------------------------------------------------------------
+# ODCZYT — tygodnie z danymi + interpretacje danego tygodnia
+# ---------------------------------------------------------------------------
+def _tygodnie_z_danymi(podatek: str) -> list[str]:
     rows = _zapytaj(
-        "SELECT tydzien_klucz, podatek, data_od, data_do, nazwa_pliku, "
-        "typ_pliku, plik, tekst, wgrano "
-        "FROM streszczenia_tygodniowe WHERE tydzien_klucz = %s AND podatek = %s",
-        (klucz, podatek),
+        "SELECT tydzien_wydania AS w FROM interpretacje_streszczenia WHERE podatek=%s "
+        "UNION SELECT tydzien_research FROM interpretacje_streszczenia WHERE podatek=%s",
+        (podatek, podatek),
     )
-    return rows[0] if rows else None
+    return sorted({r["w"] for r in rows if r.get("w")}, reverse=True)
 
 
-def _zapisz_streszczenie(podatek: str, klucz: str, data_od: str, data_do: str,
-                         nazwa: str, typ: str, bajty: bytes, tekst: str) -> None:
-    import psycopg2  # dla poprawnego zapisu BYTEA (Binary)
-
-    _wykonaj(
+def _interpretacje_tygodnia(podatek: str, W: str) -> list[dict]:
+    """Interpretacje widoczne w tygodniu W:
+       - wydane w W (tydzien_wydania = W)                 -> normalne
+       - z researchu W, ale wydane wcześniej (< W)        -> „opóźnione” (zielone)
+    """
+    rows = _zapytaj(
         """
-        INSERT INTO streszczenia_tygodniowe
-            (tydzien_klucz, podatek, data_od, data_do, nazwa_pliku,
-             typ_pliku, plik, tekst, wgrano)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-        ON CONFLICT (tydzien_klucz, podatek) DO UPDATE SET
-            data_od     = EXCLUDED.data_od,
-            data_do     = EXCLUDED.data_do,
-            nazwa_pliku = EXCLUDED.nazwa_pliku,
-            typ_pliku   = EXCLUDED.typ_pliku,
-            plik        = EXCLUDED.plik,
-            tekst       = EXCLUDED.tekst,
-            wgrano      = EXCLUDED.wgrano
+        SELECT sygnatura, data_wyd, temat, streszczenie,
+               tydzien_wydania, tydzien_research
+        FROM interpretacje_streszczenia
+        WHERE podatek = %s
+          AND ( tydzien_wydania = %s
+             OR (tydzien_research = %s AND tydzien_wydania < %s) )
+        ORDER BY data_wyd, sygnatura
         """,
-        (klucz, podatek, data_od, data_do, nazwa, typ,
-         psycopg2.Binary(bajty), tekst,
-         dt.datetime.now().isoformat(timespec="seconds")),
+        (podatek, W, W, W),
     )
+    for r in rows:
+        r["pozny"] = r["tydzien_wydania"] != W  # wydana wcześniej niż tydzień W
+    return rows
 
 
-def _usun_streszczenie(podatek: str, klucz: str) -> None:
-    _wykonaj(
-        "DELETE FROM streszczenia_tygodniowe WHERE tydzien_klucz = %s AND podatek = %s",
-        (klucz, podatek),
-    )
-
-
-def _ekstrakt_tekst(nazwa: str, bajty: bytes) -> str:
-    """Wyodrębnia tekst do wyświetlenia. DOCX parsuje się pewniej niż PDF —
-    dlatego przy generowaniu w GPT zalecany jest DOCX."""
-    n = nazwa.lower()
+# ---------------------------------------------------------------------------
+# RENDER TABELI (HTML — pełna kontrola nad zawijaniem i zielonym oznaczeniem)
+# ---------------------------------------------------------------------------
+def _kolory():
     try:
-        if n.endswith(".docx"):
-            from docx import Document
-            doc = Document(io.BytesIO(bajty))
-            czesci = []
-            for p in doc.paragraphs:
-                if p.text and p.text.strip():
-                    czesci.append(p.text.rstrip())
-            for tab in doc.tables:
-                for wiersz in tab.rows:
-                    komorki = [c.text.strip() for c in wiersz.cells if c.text.strip()]
-                    if komorki:
-                        czesci.append(" | ".join(komorki))
-            return "\n\n".join(czesci).strip() or "(Plik DOCX nie zawiera tekstu.)"
-        if n.endswith(".pdf"):
-            from pypdf import PdfReader
-            r = PdfReader(io.BytesIO(bajty))
-            strony = [(s.extract_text() or "").strip() for s in r.pages]
-            tekst = "\n\n".join(s for s in strony if s).strip()
-            return tekst or "(Nie udało się wyodrębnić tekstu z PDF — pobierz plik.)"
-    except Exception as e:
-        return f"(Nie udało się wyodrębnić tekstu: {e}. Plik jest zapisany — pobierz go poniżej.)"
-    return "(Nieobsługiwany format — dostępny tylko przycisk pobrania.)"
+        import paleta
+        p = paleta.paleta()
+        return (p.get("text", "#111"), p.get("text2", "#555"),
+                p.get("border", "#ddd"), p.get("primary", ZIELEN_GLOWNA))
+    except Exception:
+        return "#111", "#555", "#ddd", ZIELEN_GLOWNA
 
 
-# ---------------------------------------------------------------------------
-# PROMPT DO GPT "TYGODNIOWY RESEARCH"
-# ---------------------------------------------------------------------------
-def _prompt_research(podatek: str, pon: dt.date) -> str:
-    pon_d, pt_d, _ = _granice_tygodnia(pon)
-    return (
-        f"Wygeneruj tygodniowy research dla {podatek} za tydzień "
-        f"{pon_d:%d.%m.%Y}–{pt_d:%d.%m.%Y} (poniedziałek–piątek). "
-        f"Uwzględnij WSZYSTKIE interpretacje z bazy Skaner Doradca dla {podatek} "
-        f"z tego okresu (data wydania od {pon_d.isoformat()} do {pt_d.isoformat()}). "
-        f"Na końcu wygeneruj plik DOCX (oraz PDF) ze streszczeniami."
+def _fmt(iso: str) -> str:
+    try:
+        return dt.date.fromisoformat(str(iso)[:10]).strftime("%d.%m.%Y")
+    except Exception:
+        return str(iso)
+
+
+def _tabela_html(rekordy: list[dict]) -> str:
+    txt, txt2, bord, head = _kolory()
+    th = (f"padding:8px 10px;border-bottom:2px solid {head};color:{head};"
+          f"text-align:left;font-size:0.85rem;font-weight:700;")
+    style = f"width:100%;border-collapse:collapse;font-size:0.9rem;color:{txt};"
+
+    naglowek = (
+        f"<tr>"
+        f"<th style='{th}width:36px;'>L.p.</th>"
+        f"<th style='{th}white-space:nowrap;'>Sygnatura</th>"
+        f"<th style='{th}white-space:nowrap;'>Data wydania</th>"
+        f"<th style='{th}'>Temat</th>"
+        f"<th style='{th}'>Streszczenie</th>"
+        f"</tr>"
     )
+
+    wiersze = []
+    for i, r in enumerate(rekordy, start=1):
+        pozny = r.get("pozny")
+        tlo = f"background:{ZIELEN_TLO};" if pozny else ""
+        kolor_kom = f"color:{ZIELEN_TEKST};" if pozny else f"color:{txt};"
+        lewy = f"border-left:4px solid {ZIELEN_GLOWNA};" if pozny else ""
+        td = (f"padding:8px 10px;border-bottom:1px solid {bord};"
+              f"vertical-align:top;{kolor_kom}")
+
+        data_kom = _fmt(r["data_wyd"])
+        if pozny:
+            data_kom = (
+                f"<span style='text-decoration:underline;text-decoration-color:{ZIELEN_GLOWNA};'>"
+                f"{data_kom}</span><br><span style='font-size:0.72rem;color:{ZIELEN_TEKST};'>"
+                f"publikacja opóźniona</span>"
+            )
+
+        wiersze.append(
+            f"<tr style='{tlo}'>"
+            f"<td style='{td}{lewy}'>{i}</td>"
+            f"<td style='{td}white-space:nowrap;font-family:monospace;font-size:0.82rem;'>"
+            f"{html.escape(r['sygnatura'])}</td>"
+            f"<td style='{td}white-space:nowrap;'>{data_kom}</td>"
+            f"<td style='{td}'>{html.escape(r.get('temat') or '')}</td>"
+            f"<td style='{td}'>{html.escape(r.get('streszczenie') or '')}</td>"
+            f"</tr>"
+        )
+
+    return f"<table style='{style}'>{naglowek}{''.join(wiersze)}</table>"
 
 
 # ---------------------------------------------------------------------------
 # RENDER JEDNEJ ZAKŁADKI
 # ---------------------------------------------------------------------------
-def _zakladka(podatek: str, tygodnie: list[dt.date]) -> None:
+def _zakladka(podatek: str) -> None:
+    # ── WGRYWANIE (bez wyboru tygodnia — moduł przypisze sam) ───────────────
+    plik = st.file_uploader(
+        f"Wgraj plik „Tygodniowego Researchu” dla {podatek} (DOCX zalecany, PDF też)",
+        type=["docx", "pdf"],
+        key=f"up_{podatek}",
+        help="Moduł sam odczyta daty wydania i przypisze interpretacje do właściwych tygodni.",
+    )
+    if plik is not None:
+        bajty = plik.getvalue()
+        h = hashlib.md5(bajty).hexdigest()
+        if st.session_state.get(f"hash_{podatek}") != h:
+            with st.spinner("Parsuję i przypisuję do tygodni…"):
+                wiersze = _parsuj_plik(plik.name, bajty)
+                if not wiersze:
+                    st.error(
+                        "Nie udało się odczytać tabeli z pliku. Upewnij się, że to "
+                        "plik z tabelą (Sygnatura / Data wydania / Temat / Streszczenie). "
+                        "Najpewniej działa DOCX."
+                    )
+                else:
+                    zap, pom, tyg = _zapisz_interpretacje(podatek, plik.name, wiersze)
+                    st.session_state[f"hash_{podatek}"] = h
+                    kom = f"Przypisano {zap} interpretacji"
+                    if tyg:
+                        kom += f" (okres researchu: {_etykieta_tygodnia(tyg)})"
+                    if pom:
+                        kom += f"; pominięto {pom} bez czytelnej daty wydania"
+                    st.success(kom + ".")
+                    st.rerun()
+
+    st.divider()
+
+    # ── WYBÓR TYGODNIA I TABELA ─────────────────────────────────────────────
+    tygodnie = _tygodnie_z_danymi(podatek)
     if not tygodnie:
-        st.info("Brak danych w bazie — lista tygodni jest pusta.")
+        st.info("Brak wgranych streszczeń dla tego podatku. Wgraj plik powyżej.")
         return
 
-    pon = st.selectbox(
-        "Okres zestawienia",
+    W = st.selectbox(
+        "Tydzień zestawienia",
         options=tygodnie,
         format_func=_etykieta_tygodnia,
         key=f"tydzien_{podatek}",
     )
-    pon_d, pt_d, nie_d = _granice_tygodnia(pon)
-    klucz = _klucz_tygodnia(pon_d)
 
-    with st.expander("🔎 Kontrola kompletności (baza)", expanded=False):
-        try:
-            n_wyd, n_dograne = _licznik_tygodnia(
-                podatek, pon_d.isoformat(), nie_d.isoformat()
-            )
-            k1, k2 = st.columns(2)
-            k1.metric(f"Wydane {pon_d:%d.%m}–{pt_d:%d.%m}", n_wyd)
-            k2.metric("Dograne w tym tygodniu (starsze)", n_dograne)
-            if n_dograne:
-                st.caption(
-                    f"🟢 {n_dograne} interpretacji z wcześniejszą datą wydania "
-                    f"trafiło do bazy dopiero w tym tygodniu (publikacja wsteczna MF). "
-                    f"Upewnij się, że tygodniowy research je objął."
-                )
-            st.caption(
-                f"Baza ma {n_wyd} interpretacji {podatek} wydanych w tym tygodniu — "
-                f"tyle powinno znaleźć się w streszczeniu."
-            )
-        except Exception as e:
-            if "pobrano_at" in str(e):
-                st.warning(
-                    "Kontrola wstecznych publikacji wymaga kolumny `pobrano_at` "
-                    "(uruchom `migracja_pobrano_at.sql`). Reszta modułu działa bez niej."
-                )
-            else:
-                st.caption(f"Nie udało się policzyć interpretacji: {e}")
-
-    st.divider()
-
-    istniejace = _pobierz_streszczenie(podatek, klucz)
-    if istniejace:
-        _pokaz_streszczenie(podatek, klucz, pon_d, istniejace)
-    else:
-        _pokaz_wgrywanie(podatek, klucz, pon_d, pt_d, nowe=True)
-
-
-def _pokaz_streszczenie(podatek: str, klucz: str, pon_d: dt.date,
-                        rekord: dict) -> None:
-    wgrano = str(rekord.get("wgrano", ""))[:16].replace("T", " ")
-    st.caption(
-        f"📄 Streszczenie wgrane: **{rekord['nazwa_pliku']}** "
-        f"({rekord['typ_pliku'].upper()}, {wgrano})"
-    )
-
-    tekst = rekord.get("tekst") or "(Brak wyodrębnionego tekstu — pobierz plik.)"
-    with st.container(border=True):
-        st.markdown(tekst)
-
-    bajty = bytes(rekord["plik"]) if rekord.get("plik") is not None else b""
-    c1, c2 = st.columns([1, 1])
-    with c1:
-        st.download_button(
-            "⬇️ Pobierz oryginalny plik",
-            data=bajty,
-            file_name=rekord["nazwa_pliku"],
-            mime=MIME.get(rekord["typ_pliku"], "application/octet-stream"),
-            key=f"dl_{podatek}_{klucz}",
-            use_container_width=True,
-        )
-    with c2:
-        if st.button("🗑️ Usuń i wgraj inne", key=f"del_{podatek}_{klucz}",
-                     use_container_width=True):
-            _usun_streszczenie(podatek, klucz)
-            st.session_state.pop(f"hash_{podatek}_{klucz}", None)
-            st.rerun()
-
-    with st.expander("Zamień plik bez usuwania", expanded=False):
-        _pokaz_wgrywanie(podatek, klucz, pon_d,
-                         _granice_tygodnia(pon_d)[1], nowe=False)
-
-
-def _pokaz_wgrywanie(podatek: str, klucz: str, pon_d: dt.date, pt_d: dt.date,
-                     nowe: bool) -> None:
-    if nowe:
-        with st.expander("① Jak wygenerować streszczenie (prompt do GPT)",
-                         expanded=False):
-            st.caption(
-                "Wklej do GPT „Tygodniowy Research”, pobierz wygenerowany plik "
-                "(najlepiej DOCX) i wgraj go poniżej."
-            )
-            st.code(_prompt_research(podatek, pon_d), language=None)
-        etykieta = "② Wgraj plik ze streszczeniem (PDF lub DOCX)"
-    else:
-        etykieta = "Wgraj nowy plik (zastąpi obecny)"
-
-    plik = st.file_uploader(
-        etykieta,
-        type=["pdf", "docx"],
-        key=f"up_{podatek}_{klucz}",
-        help="DOCX jest zalecany — jego treść wyświetla się pewniej niż z PDF.",
-    )
-
-    if plik is None:
+    rekordy = _interpretacje_tygodnia(podatek, W)
+    if not rekordy:
+        st.info("Brak interpretacji przypisanych do tego tygodnia.")
         return
 
-    bajty = plik.getvalue()
-    h = hashlib.md5(bajty).hexdigest()
-    if st.session_state.get(f"hash_{podatek}_{klucz}") == h:
-        return
-
-    typ = "docx" if plik.name.lower().endswith(".docx") else "pdf"
-    with st.spinner("Zapisuję streszczenie…"):
-        tekst = _ekstrakt_tekst(plik.name, bajty)
-        _zapisz_streszczenie(
-            podatek, klucz, pon_d.isoformat(), pt_d.isoformat(),
-            plik.name, typ, bajty, tekst,
+    n_pozne = sum(1 for r in rekordy if r.get("pozny"))
+    if n_pozne:
+        st.caption(
+            f"🟢 {n_pozne} interpretacji podświetlonych na zielono to publikacje "
+            f"opóźnione — wydane w tygodniu wcześniejszym, ujęte w researchu tego "
+            f"tygodnia. W swoim właściwym (wcześniejszym) tygodniu widnieją normalnie."
         )
-    st.session_state[f"hash_{podatek}_{klucz}"] = h
-    st.success("Zapisano streszczenie.")
-    st.rerun()
+
+    st.markdown(_tabela_html(rekordy), unsafe_allow_html=True)
+    st.caption(f"Razem: {len(rekordy)} interpretacji {podatek} w tym tygodniu.")
 
 
 # ---------------------------------------------------------------------------
-# PUNKT WEJŚCIA MODUŁU (wywoływany z app.py)
+# PUNKT WEJŚCIA
 # ---------------------------------------------------------------------------
 def pokaz_zestawienie_tygodniowe() -> None:
     st.header("📅 Zestawienie tygodniowe")
     st.caption(
-        "Wgraj streszczenie z GPT „Tygodniowy Research” dla wybranego podatku "
-        "i tygodnia (pn–pt). Plik zapisuje się w bazie i wyświetla poniżej."
+        "Wgraj plik z GPT „Tygodniowy Research”. Moduł sam przypisze interpretacje "
+        "do właściwych tygodni (pn–nd) po dacie wydania; potem wybierasz tydzień."
     )
 
     try:
         _zapewnij_tabele()
     except Exception as e:
-        st.error(f"Nie udało się przygotować tabeli streszczeń: {e}")
+        st.error(f"Nie udało się przygotować tabeli: {e}")
         return
 
-    tygodnie = _lista_tygodni()
-    zakladki = st.tabs(PODATKI)
-    for zakladka_ui, podatek in zip(zakladki, PODATKI):
+    for zakladka_ui, podatek in zip(st.tabs(PODATKI), PODATKI):
         with zakladka_ui:
-            _zakladka(podatek, tygodnie)
+            _zakladka(podatek)
 
 
 if __name__ == "__main__":
