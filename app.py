@@ -9,6 +9,7 @@ import raporty
 import eksplorator_archiwum
 import eksplorator_wyrokow
 import zestawienie_tygodniowe
+import zestawienie_automat
 
 # Logo dolaczone bezposrednio w kodzie (base64) - dziala niezaleznie od
 # tego, gdzie i jak jest hostowana aplikacja, bez osobnego pliku obrazka.
@@ -81,7 +82,8 @@ aktywna_zakladka = st.sidebar.radio(
         "3. Analiza Wskaźnikowa",
         "4. Wyroki Sądów (WSA/NSA)",
         "5. Zestawienie Tygodniowe",
-        "6. Ustawienia Systemu (Wkrótce)"
+        "6. Zestawienie Tygodniowe Automat (próbna)",
+        "7. Ustawienia Systemu (Wkrótce)"
     ]
 )
 
@@ -103,6 +105,8 @@ elif aktywna_zakladka.startswith("4."):
     eksplorator_wyrokow.run_module()
 elif aktywna_zakladka.startswith("5."):
     zestawienie_tygodniowe.pokaz_zestawienie_tygodniowe()
+elif aktywna_zakladka.startswith("6."):
+    zestawienie_automat.pokaz_zestawienie_automat()
 else:
     # Obsluga zakladek, ktore sa dopiero w planach
     nazwa_modulu = aktywna_zakladka.split('. ')[1] if '. ' in aktywna_zakladka else 'Modul'
