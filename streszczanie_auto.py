@@ -34,10 +34,15 @@ import db_core
 import streszczacz_openrouter as sopen
 
 PODATKI = ["PIT", "CIT", "VAT", "AKCYZA"]
-DATA_START = os.environ.get("STRESZCZ_DATA_START", "2026-07-15")
-MODEL = os.environ.get("OPENROUTER_MODEL", sopen.MODEL_DOMYSLNY)
-PRZERWA_S = float(os.environ.get("STRESZCZ_PRZERWA_S", "3.5"))
-MAKS_NA_RUN = int(os.environ.get("STRESZCZ_MAKS_NA_RUN", "40"))
+# UWAGA: używamy `or`, nie os.environ.get(klucz, domyslna) — bo workflow
+# ZAWSZE ustawia te zmienne, a przy pustym polu (harmonogram albo puste pole
+# ręcznego uruchomienia) trafia tu PUSTY łańcuch. get(...) podstawiłby domyślną
+# tylko przy braku zmiennej, nie przy pustym łańcuchu — stąd wcześniej pusty
+# model i błąd „No models provided”.
+DATA_START = os.environ.get("STRESZCZ_DATA_START") or "2026-07-15"
+MODEL = os.environ.get("OPENROUTER_MODEL") or sopen.MODEL_DOMYSLNY
+PRZERWA_S = float(os.environ.get("STRESZCZ_PRZERWA_S") or "3.5")
+MAKS_NA_RUN = int(os.environ.get("STRESZCZ_MAKS_NA_RUN") or "40")
 
 
 # ---------------------------------------------------------------------------
@@ -161,9 +166,15 @@ def main() -> int:
             msg = str(e)
             bledy += 1
             print(f"[{i}/{len(do_zrobienia)}] BŁĄD {r['sygnatura']}: {msg}")
-            # Limit zapytań / kredyty — przerwij, resztę dokończy kolejny przebieg.
-            if "429" in msg or "limit" in msg.lower() or msg.startswith("HTTP 4"):
+            if "429" in msg or "limit" in msg.lower():
+                # Limit zapytań — resztę dokończy kolejny przebieg harmonogramu.
                 limit_trafiony = True
+                break
+            if msg.startswith("HTTP 4"):
+                # Błąd systemowy (zły model, klucz, konfiguracja) — dotyczy
+                # wszystkich pozycji, więc nie ma sensu iść dalej.
+                print("[automat] Błąd konfiguracji/żądania — przerywam "
+                      "(sprawdź model, klucz i sekrety).")
                 break
             # inny błąd pojedynczej pozycji — pomiń i próbuj dalej
         if i < len(do_zrobienia):
