@@ -150,8 +150,7 @@ def _interpretacje(podatek: str, klucz: str, model: str) -> list[dict]:
         s = r.get("s_streszcz")
         r["_ma"] = _sensowne(s)
         r["temat"] = (r.get("s_temat") or "") if r["_ma"] else ""
-        if r["_ma"] and r.get("s_branze"):
-            r["temat"] = (r["temat"] + f"  〔branża: {r['s_branze']}〕").strip()
+        r["branza"] = (r.get("s_branze") or "") if r["_ma"] else ""
         r["streszczenie"] = s if r["_ma"] else "— (brak streszczenia)"
     return rows
 
