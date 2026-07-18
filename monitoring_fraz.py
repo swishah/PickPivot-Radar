@@ -96,6 +96,30 @@ def zapewnij_tabele(db: db_core.SupabaseDB) -> None:
     )
     db.wykonaj(
         """
+        CREATE TABLE IF NOT EXISTS obserwowane_przedmioty (
+            id        SERIAL PRIMARY KEY,
+            przedmiot TEXT NOT NULL,      -- wartość z taksonomii PRZEDMIOTY
+            podatek   TEXT NOT NULL,      -- podatek, z którego listy pochodzi
+            email     TEXT NOT NULL,
+            aktywna   BOOLEAN DEFAULT TRUE,
+            utworzono TEXT NOT NULL,
+            UNIQUE (przedmiot, email)
+        )
+        """
+    )
+    db.wykonaj(
+        """
+        CREATE TABLE IF NOT EXISTS monitoring_przedmioty_wyslane (
+            id          SERIAL PRIMARY KEY,
+            sub_id      INTEGER NOT NULL,
+            dokument_id TEXT NOT NULL,
+            wyslano     TEXT NOT NULL,
+            UNIQUE (sub_id, dokument_id)
+        )
+        """
+    )
+    db.wykonaj(
+        """
         CREATE TABLE IF NOT EXISTS monitoring_branze_wyslane (
             id          SERIAL PRIMARY KEY,
             sub_id      INTEGER NOT NULL,
@@ -249,6 +273,69 @@ def _tresc_maila_branze(trafienia: list[dict]) -> str:
     return "\n".join(linie)
 
 
+
+def _trafienia_przedmiotow(db: db_core.SupabaseDB) -> list[dict]:
+    """Nowe pary (subskrypcja przedmiotu, dokument): świeże streszczenie ma
+    przypisany obserwowany przedmiot (obszar merytoryczny), a powiadomienia
+    jeszcze nie wysłano. Przedmiot nadaje model przy streszczaniu (zamknięta
+    taksonomia per podatek)."""
+    import datetime as dt
+    prog = (dt.datetime.now() - dt.timedelta(days=OKNO_DNI)).isoformat(
+        timespec="seconds")
+    return db.wykonaj(
+        """
+        SELECT p.id AS sub_id, p.przedmiot, p.podatek AS sub_podatek, p.email,
+               d.id AS dokument_id, d.podatek, d.sygnatura, d.data_wyd, d.link,
+               s.temat
+        FROM obserwowane_przedmioty p
+        JOIN streszczenia_auto s
+          ON s.przedmiot ILIKE '%%' || p.przedmiot || '%%'
+        JOIN dokumenty d ON d.id = s.dokument_id
+        WHERE p.aktywna = TRUE
+          AND s.wygenerowano >= %s
+          AND NOT EXISTS (
+                SELECT 1 FROM monitoring_przedmioty_wyslane w
+                WHERE w.sub_id = p.id AND w.dokument_id = d.id)
+        ORDER BY p.email, p.przedmiot, d.data_wyd
+        """,
+        (prog,),
+        fetch=True,
+    )
+
+
+def _oznacz_wyslane_przedmioty(db: db_core.SupabaseDB, pary: list[dict]) -> None:
+    import datetime as dt
+    teraz = dt.datetime.now().isoformat(timespec="seconds")
+    for p in pary:
+        db.wykonaj(
+            """INSERT INTO monitoring_przedmioty_wyslane (sub_id, dokument_id, wyslano)
+               VALUES (%s,%s,%s) ON CONFLICT (sub_id, dokument_id) DO NOTHING""",
+            (p["sub_id"], p["dokument_id"], teraz),
+        )
+
+
+def _tresc_maila_przedmioty(trafienia: list[dict]) -> str:
+    linie = ["Nowe interpretacje z obserwowanych obszarów (przedmiotów)",
+             "(Skaner Doradca — monitoring przedmiotów; obszar merytoryczny "
+             "nadawany automatycznie przy streszczaniu)", ""]
+    wg: dict[str, list[dict]] = {}
+    for t in trafienia:
+        wg.setdefault(t["przedmiot"], []).append(t)
+    for przedmiot, lista in wg.items():
+        linie.append(f"■ Przedmiot: {przedmiot} — trafień: {len(lista)}")
+        for t in lista:
+            data = str(t["data_wyd"])[:10]
+            linie.append(f"   • [{t['podatek']}] {t['sygnatura']} (wydana {data})")
+            if t.get("temat"):
+                linie.append(f"     Temat: {t['temat']}")
+            if t.get("link"):
+                linie.append(f"     {t['link']}")
+        linie.append("")
+    linie.append("— Wiadomość wygenerowana automatycznie. Obszary zarządzasz "
+                 "w aplikacji, moduł „Monitoring Przedmiotów”.")
+    return "\n".join(linie)
+
+
 # ---------------------------------------------------------------------------
 def main() -> int:
     db = _polacz()
@@ -287,7 +374,24 @@ def main() -> int:
         except Exception as e:
             print(f"[monitoring] BŁĄD wysyłki (branże) na {adres}: {e}")
 
-    if not trafienia and not tr_b:
+    # ── kanał 3: przedmioty (obszar merytoryczny nadawany przy streszczaniu) ─
+    tr_p = _trafienia_przedmiotow(db)
+    print(f"[monitoring] Przedmioty | nowych trafień: {len(tr_p)}")
+    wg_adresu_p: dict[str, list[dict]] = {}
+    for t in tr_p:
+        wg_adresu_p.setdefault(t["email"].strip(), []).append(t)
+    for adres, lista in wg_adresu_p.items():
+        try:
+            _wyslij_temat(adres, _tresc_maila_przedmioty(lista),
+                          f"[Skaner Doradca] Monitoring przedmiotów: {len(lista)} nowych trafień")
+            _oznacz_wyslane_przedmioty(db, lista)
+            print(f"[monitoring] Przedmioty → {adres}: {len(lista)} trafień.")
+        except SystemExit:
+            raise
+        except Exception as e:
+            print(f"[monitoring] BŁĄD wysyłki (przedmioty) na {adres}: {e}")
+
+    if not trafienia and not tr_b and not tr_p:
         print("[monitoring] Nic do wysłania.")
     return 0
 
