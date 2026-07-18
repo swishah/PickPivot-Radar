@@ -62,6 +62,101 @@ BRANZE = [
     "inna",
 ]
 
+
+# Taksonomie PRZEDMIOTU interpretacji (obszar merytoryczny) — osobna lista
+# per podatek. Model wybiera 1–3 pozycje z listy właściwej dla podatku danej
+# interpretacji. Ostatnia pozycja każdej listy to bezpiecznik "inne...".
+# UWAGA: te same listy muszą być w pliku wiedzy GPT (taksonomia_przedmiotow.txt)
+# dla modułu 5 — zmieniając tutaj, zmień też tam.
+PRZEDMIOTY = {
+    "CIT": [
+        "estoński CIT (ryczałt od dochodów spółek)", "podatek u źródła (WHT)",
+        "ceny transferowe i podmioty powiązane", "koszty finansowania dłużniczego",
+        "koszty uzyskania przychodów — zasady ogólne", "moment potrącalności kosztów",
+        "amortyzacja i środki trwałe", "przychody podatkowe — moment i rozpoznanie",
+        "różnice kursowe", "ulga B+R i IP Box", "pozostałe ulgi i odliczenia",
+        "zwolnienia podatkowe (w tym strefowe/PSI)",
+        "reorganizacje (połączenia, podziały, aport, wymiana udziałów)",
+        "dywidendy i przychody z udziału w zyskach", "rozliczenia w grupie (PGK)",
+        "minimalny podatek dochodowy i podatek od przychodów z budynków",
+        "ograniczenia w kosztach (usługi niematerialne)",
+        "podatek od przerzuconych dochodów", "zagraniczna jednostka kontrolowana (CFC)",
+        "rezydencja podatkowa i zakład (PE)", "świadczenia nieodpłatne",
+        "wierzytelności i ulga na złe długi", "leasing", "fundacja rodzinna (CIT)",
+        "obowiązki dokumentacyjne (MDR, TPR, CbC)", "inne zagadnienia CIT",
+    ],
+    "VAT": [
+        "stawki VAT", "zwolnienia przedmiotowe", "zwolnienie podmiotowe (limit)",
+        "prawo do odliczenia i proporcja/prewspółczynnik",
+        "moment powstania obowiązku podatkowego", "podstawa opodatkowania",
+        "wewnątrzwspólnotowa dostawa towarów (WDT)",
+        "wewnątrzwspólnotowe nabycie towarów (WNT)", "eksport i import towarów",
+        "transakcje łańcuchowe i trójstronne", "miejsce świadczenia i import usług",
+        "odwrotne obciążenie", "mechanizm podzielonej płatności (MPP)",
+        "biała lista i należyta staranność", "nieodpłatne przekazania i świadczenia",
+        "świadczenia kompleksowe", "faktury korygujące i korekty",
+        "fakturowanie i KSeF", "kasy rejestrujące", "ulga na złe długi",
+        "nieruchomości (dostawa, najem, zwolnienia)", "VAT e-commerce / OSS",
+        "transakcje finansowe i ubezpieczeniowe (zwolnienia)",
+        "prewspółczynnik JST i działalność mieszana",
+        "klasyfikacja towarów/usług i stawka (WIS)", "inne zagadnienia VAT",
+    ],
+    "PIT": [
+        "forma opodatkowania działalności (skala/liniowy/ryczałt)",
+        "ryczałt od przychodów ewidencjonowanych",
+        "przychody ze stosunku pracy i świadczenia pracownicze",
+        "świadczenia nieodpłatne i ZFŚS", "PPK/PPE", "najem i dzierżawa",
+        "sprzedaż nieruchomości i praw majątkowych",
+        "koszty uzyskania przychodów w działalności",
+        "amortyzacja i środki trwałe (PIT)",
+        "kapitały pieniężne (odsetki, dywidendy, zbycie udziałów/akcji)",
+        "waluty wirtualne (kryptoaktywa)", "ulgi i odliczenia",
+        "ulgi zerowy PIT (młodzi, powrót, 4+, senior)", "IP Box i ulga B+R (PIT)",
+        "obowiązki płatnika (zaliczki, PIT-11)",
+        "rezydencja podatkowa i dochody zagraniczne",
+        "podatek u źródła i należności licencyjne (PIT)",
+        "działalność nierejestrowana", "przychody z innych źródeł",
+        "darowizny i przychody nieodpłatne",
+        "podróże służbowe, ryczałty i ekwiwalenty",
+        "fundacja rodzinna (skutki dla beneficjentów w PIT)",
+        "inne zagadnienia PIT",
+    ],
+    "AKCYZA": [
+        "wyroby energetyczne (paliwa)", "energia elektryczna",
+        "wyroby gazowe (gaz ziemny/LPG)",
+        "napoje alkoholowe (alkohol etylowy, piwo, wino, wyroby pośrednie)",
+        "wyroby tytoniowe", "susz tytoniowy",
+        "płyn do e-papierosów i wyroby nowatorskie", "samochody osobowe",
+        "zwolnienia ze względu na przeznaczenie",
+        "zwolnienia dla energii elektrycznej (OZE, zakłady energochłonne)",
+        "składy podatkowe i zawieszenie poboru akcyzy",
+        "nabycie i dostawa wewnątrzwspólnotowa wyrobów akcyzowych",
+        "import i eksport wyrobów akcyzowych", "ubytki wyrobów akcyzowych",
+        "znaki akcyzy (banderole)",
+        "podmiot pośredniczący/zużywający i rejestracja",
+        "obowiązki ewidencyjne i deklaracyjne (w tym prosumenci)",
+        "klasyfikacja wyrobów (kody CN)", "inne zagadnienia akcyzy",
+    ],
+}
+
+
+def _waliduj_przedmioty(surowe, podatek: str) -> list[str]:
+    """Przycina do taksonomii przedmiotów WŁAŚCIWEJ dla podatku (bez wielkości
+    liter); wartości spoza listy odrzuca. Maksymalnie 3 pozycje."""
+    lista = PRZEDMIOTY.get((podatek or "").upper())
+    if not surowe or not lista:
+        return []
+    if isinstance(surowe, str):
+        surowe = re.split(r"[;]|,(?![^()]*\))", surowe)
+    mapa = {p.lower(): p for p in lista}
+    wynik = []
+    for s in surowe:
+        p = mapa.get(str(s).strip().strip('"').lower())
+        if p and p not in wynik:
+            wynik.append(p)
+    return wynik[:3]
+
+
 _SYSTEM = (
     "Jesteś asystentem polskiego doradcy podatkowego. Streszczasz polskie "
     "interpretacje indywidualne WIERNIE, wyłącznie na podstawie dostarczonej "
@@ -82,6 +177,22 @@ _SYSTEM = (
     "listy (dokładna pisownia): " + "; ".join(BRANZE) + ". Jeżeli żadna nie "
     'pasuje wyraźnie, użyj "inna".'
 )
+
+
+
+def _system_dla(podatek: str) -> str:
+    """Bazowa instrukcja + (gdy znamy podatek) wymóg klasyfikacji przedmiotowej
+    z listą właściwą dla tego podatku."""
+    lista = PRZEDMIOTY.get((podatek or "").upper())
+    if not lista:
+        return _SYSTEM
+    return _SYSTEM + (
+        '\nDodatkowo zwróć klucz "przedmioty" — listę 1–3 obszarów '
+        "merytorycznych, których dotyczy interpretacja (czego dotyczy problem "
+        "podatkowy). Wybieraj WYŁĄCZNIE z tej listy (dokładna pisownia): "
+        + "; ".join(lista) + ". Jeżeli żadna pozycja nie pasuje wyraźnie, "
+        'użyj ostatniej pozycji ("inne zagadnienia ...").'
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -143,7 +254,8 @@ def _wyodrebnij_json(tresc: str) -> dict:
             d = json.loads(t[i:j + 1])
             return {"temat": str(d.get("temat", "")).strip(),
                     "streszczenie": str(d.get("streszczenie", "")).strip(),
-                    "branze": _waliduj_branze(d.get("branze"))}
+                    "branze": _waliduj_branze(d.get("branze")),
+                    "przedmioty_raw": d.get("przedmioty")}
         except Exception:
             pass
 
@@ -152,12 +264,16 @@ def _wyodrebnij_json(tresc: str) -> dict:
     streszcz = _wytnij_pole(t, "streszczenie")
     m_br = re.search(r'"branze"\s*:\s*\[(.*?)\]', t, re.S)
     branze = _waliduj_branze(m_br.group(1)) if m_br else []
+    m_pr = re.search(r'"przedmioty"\s*:\s*\[(.*?)\]', t, re.S)
+    przedm = m_pr.group(1) if m_pr else None
     if streszcz:
-        return {"temat": temat, "streszczenie": streszcz, "branze": branze}
+        return {"temat": temat, "streszczenie": streszcz, "branze": branze,
+                "przedmioty_raw": przedm}
 
     # 3) ostatecznie: cała treść jako streszczenie, ale BEZ nagłówków JSON
     czysty = re.sub(r'^\s*\{?\s*"?(temat|streszczenie)"?\s*:\s*"?', "", t)
-    return {"temat": temat, "streszczenie": _odkoduj(czysty), "branze": branze}
+    return {"temat": temat, "streszczenie": _odkoduj(czysty), "branze": branze,
+            "przedmioty_raw": None}
 
 
 # ---------------------------------------------------------------------------
@@ -230,6 +346,7 @@ def streszcz_tekst(
     *,
     api_key: str,
     model: str = MODEL_DOMYSLNY,
+    podatek: str = "",
     limit_znakow: int = 20000,
     timeout: int = 90,
     proby: int = 3,
@@ -257,7 +374,7 @@ def streszcz_tekst(
         payload = {
             "model": model,
             "messages": [
-                {"role": "system", "content": _SYSTEM},
+                {"role": "system", "content": _system_dla(podatek)},
                 {"role": "user", "content": user_bazowy + dopisek_pl},
             ],
             "temperature": 0.2,
@@ -317,6 +434,8 @@ def streszcz_tekst(
                 "bezpieczeństwa albo po angielsku) — zmień model i spróbuj ponownie."
             )
 
+        wynik["przedmioty"] = _waliduj_przedmioty(
+            wynik.pop("przedmioty_raw", None), podatek)
         return wynik
 
     raise RuntimeError(ostatni_blad or "Nie udało się uzyskać streszczenia.")

@@ -84,6 +84,9 @@ def _zapewnij_tabele(db: db_core.SupabaseDB) -> None:
     db.wykonaj(
         "ALTER TABLE streszczenia_auto ADD COLUMN IF NOT EXISTS branze TEXT DEFAULT ''"
     )
+    db.wykonaj(
+        "ALTER TABLE streszczenia_auto ADD COLUMN IF NOT EXISTS przedmiot TEXT DEFAULT ''"
+    )
 
 
 def _sensowne(s: str | None) -> bool:
@@ -113,14 +116,17 @@ def _zapisz(db: db_core.SupabaseDB, r: dict, model: str, wynik: dict) -> None:
     db.wykonaj(
         """
         INSERT INTO streszczenia_auto
-            (dokument_id, podatek, model, temat, streszczenie, branze, wygenerowano)
-        VALUES (%s,%s,%s,%s,%s,%s,%s)
+            (dokument_id, podatek, model, temat, streszczenie, branze,
+             przedmiot, wygenerowano)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
         ON CONFLICT (dokument_id, model) DO UPDATE SET
             temat=EXCLUDED.temat, streszczenie=EXCLUDED.streszczenie,
-            branze=EXCLUDED.branze, wygenerowano=EXCLUDED.wygenerowano
+            branze=EXCLUDED.branze, przedmiot=EXCLUDED.przedmiot,
+            wygenerowano=EXCLUDED.wygenerowano
         """,
         (r["id"], r["podatek"], model, wynik.get("temat", ""),
          wynik.get("streszczenie", ""), ", ".join(wynik.get("branze") or []),
+         "; ".join(wynik.get("przedmioty") or []),
          dt.datetime.now().isoformat(timespec="seconds")),
     )
 
@@ -161,7 +167,7 @@ def main() -> int:
         try:
             wynik = sopen.streszcz_tekst(
                 r.get("tekst") or "", r["sygnatura"], str(r["data_wyd"]),
-                api_key=klucz_api, model=MODEL,
+                api_key=klucz_api, model=MODEL, podatek=r["podatek"],
             )
             _zapisz(db, r, MODEL, wynik)
             zrobione += 1

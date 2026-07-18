@@ -37,7 +37,7 @@ import re
 import streamlit as st
 
 import archiwum_supabase
-from streszczacz_openrouter import _waliduj_branze
+from streszczacz_openrouter import _waliduj_branze, _waliduj_przedmioty
 
 # ---------------------------------------------------------------------------
 # KONFIGURACJA
@@ -73,6 +73,7 @@ def _zapewnij_tabele() -> bool:
             tydzien_research TEXT NOT NULL,     -- RRRR-Www (okres pliku researchu)
             temat            TEXT DEFAULT '',
             branza           TEXT DEFAULT '',
+            przedmiot        TEXT DEFAULT '',
             streszczenie     TEXT DEFAULT '',
             nazwa_pliku      TEXT DEFAULT '',
             wgrano           TEXT NOT NULL,
@@ -83,6 +84,10 @@ def _zapewnij_tabele() -> bool:
     _wykonaj(
         "ALTER TABLE interpretacje_streszczenia "
         "ADD COLUMN IF NOT EXISTS branza TEXT DEFAULT ''"
+    )
+    _wykonaj(
+        "ALTER TABLE interpretacje_streszczenia "
+        "ADD COLUMN IF NOT EXISTS przedmiot TEXT DEFAULT ''"
     )
     _wykonaj(
         "CREATE INDEX IF NOT EXISTS idx_is_tyg "
@@ -168,6 +173,7 @@ def _parsuj_docx(bajty: bytes) -> list[dict]:
     i_str = idx("streszczenie", "omówienie", "omowienie", "opis")
     i_lp = idx("l.p", "lp", "l. p")
     i_br = idx("branż", "branza")
+    i_prz = idx("przedmiot", "obszar")
 
     def g(c, i):
         return c[i].strip() if (i is not None and i < len(c)) else ""
@@ -185,6 +191,7 @@ def _parsuj_docx(bajty: bytes) -> list[dict]:
             "temat": g(c, i_tem),
             "streszczenie": g(c, i_str),
             "branza": g(c, i_br),
+            "przedmiot": g(c, i_prz),
         })
     return wiersze
 
@@ -241,8 +248,8 @@ def _zapisz_interpretacje(podatek: str, nazwa: str, wiersze: list[dict]) -> tupl
             """
             INSERT INTO interpretacje_streszczenia
                 (podatek, sygnatura, data_wyd, tydzien_wydania, tydzien_research,
-                 temat, streszczenie, branza, nazwa_pliku, wgrano)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                 temat, streszczenie, branza, przedmiot, nazwa_pliku, wgrano)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             ON CONFLICT (podatek, sygnatura) DO UPDATE SET
                 data_wyd         = EXCLUDED.data_wyd,
                 tydzien_wydania  = EXCLUDED.tydzien_wydania,
@@ -250,12 +257,14 @@ def _zapisz_interpretacje(podatek: str, nazwa: str, wiersze: list[dict]) -> tupl
                 temat            = EXCLUDED.temat,
                 streszczenie     = EXCLUDED.streszczenie,
                 branza           = EXCLUDED.branza,
+                przedmiot        = EXCLUDED.przedmiot,
                 nazwa_pliku      = EXCLUDED.nazwa_pliku,
                 wgrano           = EXCLUDED.wgrano
             """,
             (podatek, w["sygnatura"], d.isoformat(), _klucz_tygodnia(d),
              tydzien_research, w.get("temat", ""), w.get("streszczenie", ""),
              ", ".join(_waliduj_branze(w.get("branza", ""))),
+             "; ".join(_waliduj_przedmioty(w.get("przedmiot", ""), podatek)),
              nazwa, teraz),
         )
         zapisane += 1
@@ -283,6 +292,7 @@ def _interpretacje_tygodnia(podatek: str, W: str) -> list[dict]:
         """
         SELECT sygnatura, data_wyd, temat, streszczenie,
                COALESCE(branza, '') AS branza,
+               COALESCE(przedmiot, '') AS przedmiot,
                tydzien_wydania, tydzien_research
         FROM interpretacje_streszczenia
         WHERE podatek = %s
@@ -327,9 +337,13 @@ def _tabela_html(rekordy: list[dict]) -> str:
     # dzięki temu pliki sprzed zmiany instrukcji GPT (bez branży) oraz stare
     # streszczenia automatu renderują się jak dotąd, bez pustej kolumny.
     z_branza = any((r.get("branza") or "").strip() for r in rekordy)
+    z_przedmiot = any((r.get("przedmiot") or "").strip() for r in rekordy)
 
     kol_branza_naglowek = (
         f"<th style='{th}white-space:nowrap;'>Branża</th>" if z_branza else ""
+    )
+    kol_przedmiot_naglowek = (
+        f"<th style='{th}'>Przedmiot</th>" if z_przedmiot else ""
     )
     naglowek = (
         f"<tr>"
@@ -338,6 +352,7 @@ def _tabela_html(rekordy: list[dict]) -> str:
         f"<th style='{th}white-space:nowrap;'>Data wydania</th>"
         f"<th style='{th}'>Temat</th>"
         f"{kol_branza_naglowek}"
+        f"{kol_przedmiot_naglowek}"
         f"<th style='{th}'>Streszczenie</th>"
         f"</tr>"
     )
@@ -364,6 +379,10 @@ def _tabela_html(rekordy: list[dict]) -> str:
             br = html.escape((r.get("branza") or "").strip())
             kom_branza = (f"<td style='{td}white-space:nowrap;"
                           f"font-size:0.82rem;'>{br}</td>")
+        kom_przedmiot = ""
+        if z_przedmiot:
+            pr = html.escape((r.get("przedmiot") or "").strip())
+            kom_przedmiot = f"<td style='{td}font-size:0.82rem;'>{pr}</td>"
 
         wiersze.append(
             f"<tr style='{tlo}'>"
@@ -373,6 +392,7 @@ def _tabela_html(rekordy: list[dict]) -> str:
             f"<td style='{td}white-space:nowrap;'>{data_kom}</td>"
             f"<td style='{td}'>{html.escape(r.get('temat') or '')}</td>"
             f"{kom_branza}"
+            f"{kom_przedmiot}"
             f"<td style='{td}'>{html.escape(r.get('streszczenie') or '')}</td>"
             f"</tr>"
         )

@@ -75,6 +75,9 @@ def _zapewnij_tabele() -> bool:
     _wykonaj(
         "ALTER TABLE streszczenia_auto ADD COLUMN IF NOT EXISTS branze TEXT DEFAULT ''"
     )
+    _wykonaj(
+        "ALTER TABLE streszczenia_auto ADD COLUMN IF NOT EXISTS przedmiot TEXT DEFAULT ''"
+    )
     return True
 
 
@@ -131,7 +134,8 @@ def _interpretacje(podatek: str, klucz: str, model: str) -> list[dict]:
         """
         SELECT d.id, d.sygnatura, d.data_wyd, d.tekst,
                s.temat AS s_temat, s.streszczenie AS s_streszcz,
-               COALESCE(s.branze, '') AS s_branze
+               COALESCE(s.branze, '') AS s_branze,
+               COALESCE(s.przedmiot, '') AS s_przedmiot
         FROM dokumenty d
         LEFT JOIN streszczenia_auto s
                ON s.dokument_id = d.id AND s.model = %s
@@ -151,22 +155,26 @@ def _interpretacje(podatek: str, klucz: str, model: str) -> list[dict]:
         r["_ma"] = _sensowne(s)
         r["temat"] = (r.get("s_temat") or "") if r["_ma"] else ""
         r["branza"] = (r.get("s_branze") or "") if r["_ma"] else ""
+        r["przedmiot"] = (r.get("s_przedmiot") or "") if r["_ma"] else ""
         r["streszczenie"] = s if r["_ma"] else "— (brak streszczenia)"
     return rows
 
 
 def _zapisz_streszczenie(dok_id: str, podatek: str, model: str,
-                         temat: str, streszcz: str, branze: str = "") -> None:
+                         temat: str, streszcz: str, branze: str = "",
+                         przedmiot: str = "") -> None:
     _wykonaj(
         """
         INSERT INTO streszczenia_auto
-            (dokument_id, podatek, model, temat, streszczenie, branze, wygenerowano)
-        VALUES (%s,%s,%s,%s,%s,%s,%s)
+            (dokument_id, podatek, model, temat, streszczenie, branze,
+             przedmiot, wygenerowano)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
         ON CONFLICT (dokument_id, model) DO UPDATE SET
             temat=EXCLUDED.temat, streszczenie=EXCLUDED.streszczenie,
-            branze=EXCLUDED.branze, wygenerowano=EXCLUDED.wygenerowano
+            branze=EXCLUDED.branze, przedmiot=EXCLUDED.przedmiot,
+            wygenerowano=EXCLUDED.wygenerowano
         """,
-        (dok_id, podatek, model, temat, streszcz, branze,
+        (dok_id, podatek, model, temat, streszcz, branze, przedmiot,
          dt.datetime.now().isoformat(timespec="seconds")),
     )
 
@@ -245,11 +253,12 @@ def _streszczaj(pozycje: list[dict], podatek: str, model: str, klucz_api: str) -
         try:
             wynik = sopen.streszcz_tekst(
                 r.get("tekst") or "", r["sygnatura"], str(r["data_wyd"]),
-                api_key=klucz_api, model=model,
+                api_key=klucz_api, model=model, podatek=podatek,
             )
             _zapisz_streszczenie(r["id"], podatek, model,
                                  wynik["temat"], wynik["streszczenie"],
-                                 ", ".join(wynik.get("branze") or []))
+                                 ", ".join(wynik.get("branze") or []),
+                                 "; ".join(wynik.get("przedmioty") or []))
             ok += 1
         except Exception as e:
             bledy += 1
