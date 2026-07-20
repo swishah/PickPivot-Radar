@@ -250,8 +250,15 @@ def aktywuj_ponownie(email: str) -> None:
 
 
 def ma_dostep(rola: str, modul: str) -> bool:
+    # Administrator (w tym konto zaszyte DORADCA) ma dostęp do KAŻDEGO modułu
+    # z definicji — niezależnie od mapy, żeby nie dało się go przypadkiem
+    # zablokować (np. po zmianie numeracji modułów).
+    if rola == "admin":
+        return True
     return rola in UPRAWNIENIA.get(modul, set())
 
 
 def ma_uprawnienie(rola: str, nazwa: str) -> bool:
+    if rola == "admin":
+        return True
     return rola in UPRAWNIENIA_SZCZEGOLOWE.get(nazwa, set())

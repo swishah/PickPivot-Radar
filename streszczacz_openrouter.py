@@ -142,19 +142,19 @@ PRZEDMIOTY = {
 
 def _waliduj_przedmioty(surowe, podatek: str) -> list[str]:
     """Przycina do taksonomii przedmiotów WŁAŚCIWEJ dla podatku (bez wielkości
-    liter); wartości spoza listy odrzuca. Maksymalnie 3 pozycje."""
+    liter); wartości spoza listy odrzuca. Zwraca JEDEN dominujący przedmiot
+    (pierwszy trafiony z listy) — klasyfikacja jednowartościowa."""
     lista = PRZEDMIOTY.get((podatek or "").upper())
     if not surowe or not lista:
         return []
     if isinstance(surowe, str):
         surowe = re.split(r"[;]|,(?![^()]*\))", surowe)
     mapa = {p.lower(): p for p in lista}
-    wynik = []
     for s in surowe:
         p = mapa.get(str(s).strip().strip('"').lower())
-        if p and p not in wynik:
-            wynik.append(p)
-    return wynik[:3]
+        if p:
+            return [p]
+    return []
 
 
 _SYSTEM = (
@@ -187,11 +187,11 @@ def _system_dla(podatek: str) -> str:
     if not lista:
         return _SYSTEM
     return _SYSTEM + (
-        '\nDodatkowo zwróć klucz "przedmioty" — listę 1–3 obszarów '
-        "merytorycznych, których dotyczy interpretacja (czego dotyczy problem "
-        "podatkowy). Wybieraj WYŁĄCZNIE z tej listy (dokładna pisownia): "
-        + "; ".join(lista) + ". Jeżeli żadna pozycja nie pasuje wyraźnie, "
-        'użyj ostatniej pozycji ("inne zagadnienia ...").'
+        '\nDodatkowo zwróć klucz "przedmiot" — DOKŁADNIE JEDEN, dominujący '
+        "obszar merytoryczny, którego NAJBARDZIEJ dotyczy interpretacja "
+        "(główny problem podatkowy). Wybierz WYŁĄCZNIE jedną pozycję z tej "
+        "listy (dokładna pisownia): " + "; ".join(lista) + ". Jeżeli żadna "
+        'pozycja nie pasuje wyraźnie, użyj ostatniej ("inne zagadnienia ...").'
     )
 
 
@@ -255,7 +255,7 @@ def _wyodrebnij_json(tresc: str) -> dict:
             return {"temat": str(d.get("temat", "")).strip(),
                     "streszczenie": str(d.get("streszczenie", "")).strip(),
                     "branze": _waliduj_branze(d.get("branze")),
-                    "przedmioty_raw": d.get("przedmioty")}
+                    "przedmioty_raw": d.get("przedmiot", d.get("przedmioty"))}
         except Exception:
             pass
 
@@ -264,7 +264,9 @@ def _wyodrebnij_json(tresc: str) -> dict:
     streszcz = _wytnij_pole(t, "streszczenie")
     m_br = re.search(r'"branze"\s*:\s*\[(.*?)\]', t, re.S)
     branze = _waliduj_branze(m_br.group(1)) if m_br else []
-    m_pr = re.search(r'"przedmioty"\s*:\s*\[(.*?)\]', t, re.S)
+    m_pr = re.search(r'"przedmiot"\s*:\s*"([^"]*)"', t)
+    if not m_pr:
+        m_pr = re.search(r'"przedmiot[y]?"\s*:\s*\[(.*?)\]', t, re.S)
     przedm = m_pr.group(1) if m_pr else None
     if streszcz:
         return {"temat": temat, "streszczenie": streszcz, "branze": branze,

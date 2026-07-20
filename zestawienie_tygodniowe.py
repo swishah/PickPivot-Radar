@@ -284,28 +284,28 @@ def _tygodnie_z_danymi(podatek: str) -> list[str]:
     return sorted({r["w"] for r in rows if r.get("w")}, reverse=True)
 
 
-def _interpretacje_tygodnia(podatek: str, W: str) -> list[dict]:
-    """Interpretacje widoczne w tygodniu W:
-       - wydane w W (tydzien_wydania = W)                 -> normalne
-       - z researchu W, ale wydane wcześniej (< W)        -> „opóźnione” (zielone)
-    """
-    rows = _zapytaj(
-        """
+LIMIT_WIERSZY_5 = 50
+SORT_KOLUMNY_5 = {"Data wydania": "data_wyd", "Sygnatura": "sygnatura"}
+
+
+def _interpretacje_sortowane(podatek: str, sort_kol: str,
+                             malejaco: bool) -> list[dict]:
+    """50 wgranych interpretacji danego podatku, z wybranym sortowaniem.
+    Bez daty publikacji — w module 5 byłaby zawsze datą wgrania pliku."""
+    kol = SORT_KOLUMNY_5.get(sort_kol, "data_wyd")
+    kier = "DESC" if malejaco else "ASC"
+    return _zapytaj(
+        f"""
         SELECT sygnatura, data_wyd, temat, streszczenie,
                COALESCE(branza, '') AS branza,
-               COALESCE(przedmiot, '') AS przedmiot,
-               tydzien_wydania, tydzien_research
+               COALESCE(przedmiot, '') AS przedmiot
         FROM interpretacje_streszczenia
         WHERE podatek = %s
-          AND ( tydzien_wydania = %s
-             OR (tydzien_research = %s AND tydzien_wydania < %s) )
-        ORDER BY data_wyd, sygnatura
+        ORDER BY {kol} {kier} NULLS LAST, sygnatura
+        LIMIT {LIMIT_WIERSZY_5}
         """,
-        (podatek, W, W, W),
+        (podatek,),
     )
-    for r in rows:
-        r["pozny"] = r["tydzien_wydania"] != W  # wydana wcześniej niż tydzień W
-    return rows
 
 
 # ---------------------------------------------------------------------------
@@ -334,23 +334,26 @@ def _tabela_html(rekordy: list[dict]) -> str:
           f"text-align:left;font-size:0.85rem;font-weight:700;")
     style = f"width:100%;border-collapse:collapse;font-size:0.9rem;color:{txt};"
 
-    # Kolumna „Branża” pojawia się tylko, gdy jakikolwiek wiersz ją ma —
-    # dzięki temu pliki sprzed zmiany instrukcji GPT (bez branży) oraz stare
-    # streszczenia automatu renderują się jak dotąd, bez pustej kolumny.
+    # Kolumny warunkowe — pojawiają się tylko, gdy jakikolwiek wiersz je ma.
     z_branza = any((r.get("branza") or "").strip() for r in rekordy)
     z_przedmiot = any((r.get("przedmiot") or "").strip() for r in rekordy)
+    # „Data publikacji” (= data pobrania do bazy) — pokazywana w module 6;
+    # w module 5 rekordy jej nie mają, więc kolumna się nie renderuje.
+    z_publikacja = any(r.get("data_publikacji") for r in rekordy)
 
     kol_branza_naglowek = (
-        f"<th style='{th}white-space:nowrap;'>Branża</th>" if z_branza else ""
-    )
+        f"<th style='{th}white-space:nowrap;'>Branża</th>" if z_branza else "")
     kol_przedmiot_naglowek = (
-        f"<th style='{th}'>Przedmiot</th>" if z_przedmiot else ""
-    )
+        f"<th style='{th}'>Przedmiot</th>" if z_przedmiot else "")
+    kol_publikacja_naglowek = (
+        f"<th style='{th}white-space:nowrap;'>Data publikacji</th>"
+        if z_publikacja else "")
     naglowek = (
         f"<tr>"
         f"<th style='{th}width:36px;'>L.p.</th>"
         f"<th style='{th}white-space:nowrap;'>Sygnatura</th>"
         f"<th style='{th}white-space:nowrap;'>Data wydania</th>"
+        f"{kol_publikacja_naglowek}"
         f"<th style='{th}'>Temat</th>"
         f"{kol_branza_naglowek}"
         f"{kol_przedmiot_naglowek}"
@@ -360,20 +363,18 @@ def _tabela_html(rekordy: list[dict]) -> str:
 
     wiersze = []
     for i, r in enumerate(rekordy, start=1):
-        pozny = r.get("pozny")
-        tlo = f"background:{ZIELEN_TLO};" if pozny else ""
-        kolor_kom = f"color:{ZIELEN_TEKST};" if pozny else f"color:{txt};"
-        lewy = f"border-left:4px solid {ZIELEN_GLOWNA};" if pozny else ""
         td = (f"padding:8px 10px;border-bottom:1px solid {bord};"
-              f"vertical-align:top;{kolor_kom}")
+              f"vertical-align:top;color:{txt};")
 
-        data_kom = _fmt(r["data_wyd"])
-        if pozny:
-            data_kom = (
-                f"<span style='text-decoration:underline;text-decoration-color:{ZIELEN_GLOWNA};'>"
-                f"{data_kom}</span><br><span style='font-size:0.72rem;color:{ZIELEN_TEKST};'>"
-                f"publikacja opóźniona</span>"
-            )
+        kom_publikacja = ""
+        if z_publikacja:
+            pub = _fmt(r["data_publikacji"]) if r.get("data_publikacji") else "—"
+            rozna = (r.get("data_publikacji") and
+                     str(r.get("data_publikacji"))[:10] != str(r.get("data_wyd"))[:10])
+            if rozna:
+                pub = (f"{pub}<br><span style='font-size:0.72rem;color:{txt2};'>"
+                       f"inna niż data wydania</span>")
+            kom_publikacja = f"<td style='{td}white-space:nowrap;'>{pub}</td>"
 
         kom_branza = ""
         if z_branza:
@@ -386,11 +387,12 @@ def _tabela_html(rekordy: list[dict]) -> str:
             kom_przedmiot = f"<td style='{td}font-size:0.82rem;'>{pr}</td>"
 
         wiersze.append(
-            f"<tr style='{tlo}'>"
-            f"<td style='{td}{lewy}'>{i}</td>"
+            f"<tr>"
+            f"<td style='{td}'>{i}</td>"
             f"<td style='{td}white-space:nowrap;font-family:monospace;font-size:0.82rem;'>"
             f"{html.escape(r['sygnatura'])}</td>"
-            f"<td style='{td}white-space:nowrap;'>{data_kom}</td>"
+            f"<td style='{td}white-space:nowrap;'>{_fmt(r['data_wyd'])}</td>"
+            f"{kom_publikacja}"
             f"<td style='{td}'>{html.escape(r.get('temat') or '')}</td>"
             f"{kom_branza}"
             f"{kom_przedmiot}"
@@ -445,34 +447,22 @@ def _zakladka(podatek: str) -> None:
                         st.rerun()
         st.divider()
 
-    # ── WYBÓR TYGODNIA I TABELA ─────────────────────────────────────────────
-    tygodnie = _tygodnie_z_danymi(podatek)
-    if not tygodnie:
+    # ── SORTOWANA TABELA (zamiast podziału na tygodnie) ─────────────────────
+    c1, c2 = st.columns([2, 1])
+    with c1:
+        sort_kol = st.selectbox("Sortuj według", list(SORT_KOLUMNY_5.keys()),
+                                key=f"tyg_sort_{podatek}")
+    with c2:
+        kierunek = st.selectbox("Kolejność", ["malejąco", "rosnąco"],
+                                key=f"tyg_kier_{podatek}")
+    rekordy = _interpretacje_sortowane(podatek, sort_kol, kierunek == "malejąco")
+    if not rekordy:
         st.info("Brak wgranych streszczeń dla tego podatku. Wgraj plik powyżej.")
         return
 
-    W = st.selectbox(
-        "Tydzień zestawienia",
-        options=tygodnie,
-        format_func=_etykieta_tygodnia,
-        key=f"tydzien_{podatek}",
-    )
-
-    rekordy = _interpretacje_tygodnia(podatek, W)
-    if not rekordy:
-        st.info("Brak interpretacji przypisanych do tego tygodnia.")
-        return
-
-    n_pozne = sum(1 for r in rekordy if r.get("pozny"))
-    if n_pozne:
-        st.caption(
-            f"🟢 {n_pozne} interpretacji podświetlonych na zielono to publikacje "
-            f"opóźnione — wydane w tygodniu wcześniejszym, ujęte w researchu tego "
-            f"tygodnia. W swoim właściwym (wcześniejszym) tygodniu widnieją normalnie."
-        )
-
     st.markdown(_tabela_html(rekordy), unsafe_allow_html=True)
-    st.caption(f"Razem: {len(rekordy)} interpretacji {podatek} w tym tygodniu.")
+    st.caption(f"Pokazano {len(rekordy)} interpretacji {podatek} "
+               f"(limit {LIMIT_WIERSZY_5}, sortowanie: {sort_kol.lower()}).")
 
 
 # ---------------------------------------------------------------------------
@@ -481,8 +471,8 @@ def _zakladka(podatek: str) -> None:
 def pokaz_zestawienie_tygodniowe() -> None:
     st.header("📅 Zestawienie tygodniowe")
     st.caption(
-        "Wgraj plik z GPT „Tygodniowy Research”. Moduł sam przypisze interpretacje "
-        "do właściwych tygodni (pn–nd) po dacie wydania; potem wybierasz tydzień."
+        "Wgraj plik z GPT „Tygodniowy Research”. Interpretacje trafią do "
+        "wspólnej tabeli, którą sortujesz po dacie wydania lub sygnaturze."
     )
 
     try:

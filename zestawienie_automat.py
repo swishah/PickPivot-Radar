@@ -128,36 +128,67 @@ def _sensowne(s: str | None) -> bool:
     return not sopen.streszczenie_wadliwe(s)
 
 
-def _interpretacje(podatek: str, klucz: str, model: str) -> list[dict]:
-    pon, nd = _granice(klucz)
+LIMIT_WIERSZY = 50
+SORT_KOLUMNY = {
+    "Data wydania": "d.data_wyd",
+    "Data publikacji": "d.pobrano_at",
+    "Sygnatura": "d.sygnatura",
+}
+
+
+def _wiersze(podatek: str, model: str, sort_kol: str, malejaco: bool) -> list[dict]:
+    """50 wierszy do wyświetlenia (bez pełnych tekstów), z wybranym sortowaniem.
+    Data publikacji = pobrano_at (data dogrania do bazy)."""
+    kol = SORT_KOLUMNY.get(sort_kol, "d.data_wyd")
+    kier = "DESC" if malejaco else "ASC"
     rows = _zapytaj(
-        """
-        SELECT d.id, d.sygnatura, d.data_wyd, d.tekst,
+        f"""
+        SELECT d.id, d.sygnatura, d.data_wyd, d.pobrano_at,
                s.temat AS s_temat, s.streszczenie AS s_streszcz,
                COALESCE(s.branze, '') AS s_branze,
                COALESCE(s.przedmiot, '') AS s_przedmiot
         FROM dokumenty d
         LEFT JOIN streszczenia_auto s
                ON s.dokument_id = d.id AND s.model = %s
-        WHERE d.podatek = %s
-          AND d.data_wyd >= %s
-          AND ( (d.data_wyd >= %s AND d.data_wyd <= %s)
-             OR (d.pobrano_at >= %s::date AND d.pobrano_at < (%s::date + 1)
-                 AND d.data_wyd < %s) )
-        ORDER BY d.data_wyd, d.sygnatura
+        WHERE d.podatek = %s AND d.data_wyd >= %s
+        ORDER BY {kol} {kier} NULLS LAST, d.sygnatura
+        LIMIT {LIMIT_WIERSZY}
         """,
-        (model, podatek, DATA_START, pon.isoformat(), nd.isoformat(),
-         pon.isoformat(), nd.isoformat(), pon.isoformat()),
+        (model, podatek, DATA_START),
     )
     for r in rows:
-        r["pozny"] = str(r["data_wyd"]) < pon.isoformat()
-        s = r.get("s_streszcz")
-        r["_ma"] = _sensowne(s)
+        r["_ma"] = _sensowne(r.get("s_streszcz"))
         r["temat"] = (r.get("s_temat") or "") if r["_ma"] else ""
         r["branza"] = (r.get("s_branze") or "") if r["_ma"] else ""
         r["przedmiot"] = (r.get("s_przedmiot") or "") if r["_ma"] else ""
-        r["streszczenie"] = s if r["_ma"] else "— (brak streszczenia)"
+        r["streszczenie"] = r.get("s_streszcz") if r["_ma"] else "— (brak streszczenia)"
+        r["data_publikacji"] = r.get("pobrano_at")
     return rows
+
+
+def _brakujace(podatek: str, model: str) -> list[dict]:
+    """Interpretacje bez sensownego streszczenia (do przycisku i licznika).
+    Lekko — bez pełnych tekstów; tekst dobierany dopiero dla wsadu."""
+    rows = _zapytaj(
+        """
+        SELECT d.id, d.sygnatura, d.data_wyd, s.streszczenie AS s_streszcz
+        FROM dokumenty d
+        LEFT JOIN streszczenia_auto s
+               ON s.dokument_id = d.id AND s.model = %s
+        WHERE d.podatek = %s AND d.data_wyd >= %s
+        ORDER BY d.data_wyd DESC
+        """,
+        (model, podatek, DATA_START),
+    )
+    return [r for r in rows if not _sensowne(r.get("s_streszcz"))]
+
+
+def _tekst_dla(ids: list[str]) -> dict:
+    if not ids:
+        return {}
+    rows = _zapytaj(
+        "SELECT id, tekst FROM dokumenty WHERE id = ANY(%s)", (ids,))
+    return {r["id"]: r.get("tekst") or "" for r in rows}
 
 
 def _zapisz_streszczenie(dok_id: str, podatek: str, model: str,
@@ -196,53 +227,52 @@ def _api_key() -> str | None:
 # ZAKŁADKA
 # ---------------------------------------------------------------------------
 def _zakladka(podatek: str, model: str, klucz_api: str | None) -> None:
-    tygodnie = _lista_tygodni(podatek)
-    if not tygodnie:
-        st.info("Brak interpretacji w bazie dla tego podatku.")
-        return
+    c1, c2 = st.columns([2, 1])
+    with c1:
+        sort_kol = st.selectbox(
+            "Sortuj według", list(SORT_KOLUMNY.keys()),
+            key=f"auto_sort_{podatek}")
+    with c2:
+        kierunek = st.selectbox(
+            "Kolejność", ["malejąco", "rosnąco"], key=f"auto_kier_{podatek}")
+    malejaco = kierunek == "malejąco"
 
-    W = st.selectbox("Tydzień zestawienia", options=tygodnie,
-                     format_func=_etykieta_tygodnia, key=f"auto_tydz_{podatek}")
-
-    rekordy = _interpretacje(podatek, W, model)
+    rekordy = _wiersze(podatek, model, sort_kol, malejaco)
     if not rekordy:
-        st.info("Brak interpretacji przypisanych do tego tygodnia.")
+        st.info("Brak interpretacji w bazie dla tego podatku "
+                f"(od {DATA_START}).")
         return
 
-    brak = [r for r in rekordy if not r.get("_ma")]
-    n_pozne = sum(1 for r in rekordy if r.get("pozny"))
+    brak = _brakujace(podatek, model)
 
-    k1, k2, k3 = st.columns(3)
-    k1.metric("Interpretacji w tygodniu", len(rekordy))
-    k2.metric("Bez streszczenia", len(brak))
-    k3.metric("Publikacje opóźnione", n_pozne)
+    k1, k2 = st.columns(2)
+    k1.metric(f"Pokazano (limit {LIMIT_WIERSZY})", len(rekordy))
+    k2.metric("Bez streszczenia (wszystkie)", len(brak))
 
     if brak:
         if not klucz_api:
             st.warning(
                 "Brak klucza OpenRouter — dodaj sekcję [openrouter] w Secrets, "
-                "aby streszczać (patrz instrukcja). Poniżej i tak zobaczysz tabelę."
+                "aby streszczać. Poniżej i tak zobaczysz tabelę."
             )
         else:
             do_zrobienia = min(len(brak), BATCH_MAKS)
             if st.button(
                 f"🤖 Streść brakujące ({do_zrobienia} z {len(brak)}) — model: {model}",
-                key=f"auto_btn_{podatek}_{W}", type="primary",
+                key=f"auto_btn_{podatek}", type="primary",
             ):
-                _streszczaj(brak[:BATCH_MAKS], podatek, model, klucz_api)
+                wsad = brak[:BATCH_MAKS]
+                teksty = _tekst_dla([r["id"] for r in wsad])
+                for r in wsad:
+                    r["tekst"] = teksty.get(r["id"], "")
+                _streszczaj(wsad, podatek, model, klucz_api)
                 st.rerun()
-
-    if n_pozne:
-        st.caption(
-            f"🟢 {n_pozne} pozycji na zielono to publikacje opóźnione — wydane "
-            f"wcześniej, do bazy trafiły w tym tygodniu. W swoim właściwym "
-            f"(wcześniejszym) tygodniu widnieją normalnie."
-        )
 
     st.markdown(_tabela_html(rekordy), unsafe_allow_html=True)
     st.caption(
-        f"Streszczenia generowane automatycznie modelem `{model}` (OpenRouter). "
-        f"Wersja próbna — zawsze weryfikuj przed użyciem w doradztwie."
+        f"„Data publikacji” = data dogrania do bazy (pobrania). Sortuj po niej, "
+        f"aby nic nie umknęło przy publikacjach opóźnionych. Streszczenia "
+        f"generowane modelem `{model}` (OpenRouter) — zawsze weryfikuj przed użyciem."
     )
 
 
