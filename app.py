@@ -13,6 +13,7 @@ import zestawienie_automat
 import monitoring_ui
 import ustawienia_systemu
 import wyszukiwarka_klasyfikacji
+import auth
 
 # Logo dolaczone bezposrednio w kodzie (base64) - dziala niezaleznie od
 # tego, gdzie i jak jest hostowana aplikacja, bez osobnego pliku obrazka.
@@ -51,60 +52,102 @@ def _naglowek_logo(wysokosc_px: int = 34):
 # 1. Konfiguracja glownej strony
 st.set_page_config(page_title=paleta.NAZWA_MARKI, page_icon="📗", layout="wide")
 
-# 2. Bezpieczny system autoryzacji
-# Dane logowania NIE sa zaszyte w kodzie — pochodza z Streamlit Secrets:
-#   [auth]
-#   login = "..."
-#   haslo = "..."
-# Dzieki temu repozytorium nie zawiera hasla, a zmiana hasla nie wymaga
-# commita (wystarczy edycja Secrets; aplikacja przeladuje sie sama).
+# 2. System autoryzacji — konto zaszyte DORADCA (awaryjny superadmin z
+# Secrets) ORAZ konta bazodanowe (@doradca.lublin.pl, role admin/user).
+# Konto DORADCA jest sprawdzane jako pierwsze i NIE zależy od bazy kont —
+# dzięki temu zawsze można się zalogować, nawet gdyby tabela kont miała
+# problem, i to nim tworzy się pierwsze konta.
 import hmac
 import time as _time
 
-if 'authenticated' not in st.session_state:
-    st.session_state['authenticated'] = False
-if 'proby_logowania' not in st.session_state:
-    st.session_state['proby_logowania'] = 0
+for _k, _v in {"authenticated": False, "rola": None, "user_email": None,
+               "superadmin": False, "proby_logowania": 0}.items():
+    if _k not in st.session_state:
+        st.session_state[_k] = _v
+
+# Tabela kont tworzy się sama; błąd bazy nie może zablokować logowania DORADCA.
+try:
+    auth.zapewnij_tabele()
+except Exception:
+    pass
+
+
+def _zaloguj_doradca(login: str, haslo: str) -> bool:
+    try:
+        dobry_login = st.secrets["auth"]["login"]
+        dobre_haslo = st.secrets["auth"]["haslo"]
+    except Exception:
+        return False
+    ok = (hmac.compare_digest(login.encode(), dobry_login.encode())
+          and hmac.compare_digest(haslo.encode(), dobre_haslo.encode()))
+    if ok:
+        st.session_state.update(authenticated=True, rola="admin",
+                                user_email="DORADCA", superadmin=True,
+                                proby_logowania=0)
+    return ok
+
 
 if not st.session_state['authenticated']:
     st.markdown("<br><br>", unsafe_allow_html=True)
     col_login, _ = st.columns([1, 2])
     with col_login:
         _naglowek_logo(wysokosc_px=40)
-        st.markdown("#### Panel logowania")
-        st.markdown("Logowanie do systemu modularnego.")
+        tab_log, tab_akt = st.tabs(["🔐 Logowanie", "✉️ Pierwsze logowanie / aktywacja"])
 
-        username = st.text_input("Login:")
-        password = st.text_input("Hasło:", type="password")
+        with tab_log:
+            st.caption("Login: „DORADCA” (administrator) lub adres "
+                       "@doradca.lublin.pl.")
+            username = st.text_input("Login / adres e-mail:", key="log_user")
+            password = st.text_input("Hasło:", type="password", key="log_pass")
 
-        if st.button("🚀 Zaloguj się", type="primary", use_container_width=True):
-            try:
-                dobry_login = st.secrets["auth"]["login"]
-                dobre_haslo = st.secrets["auth"]["haslo"]
-            except Exception:
-                st.error(
-                    "Brak sekcji [auth] w Streamlit Secrets. Dodaj w "
-                    "Manage app → Settings → Secrets klucze login i haslo."
-                )
-                st.stop()
+            if st.button("🚀 Zaloguj się", type="primary",
+                         use_container_width=True, key="log_btn"):
+                if st.session_state['proby_logowania'] >= 3:
+                    _time.sleep(min(2 ** (st.session_state['proby_logowania'] - 2), 30))
 
-            # Spowolnienie po bledach: kazda kolejna nieudana proba wydluza
-            # oczekiwanie (utrudnia zgadywanie hasla automatem).
-            if st.session_state['proby_logowania'] >= 3:
-                _time.sleep(min(2 ** (st.session_state['proby_logowania'] - 2), 30))
+                # 1) konto zaszyte DORADCA (niezależne od bazy)
+                if _zaloguj_doradca(username.strip(), password):
+                    st.rerun()
+                else:
+                    # 2) konto bazodanowe (@doradca.lublin.pl)
+                    sesja = None
+                    try:
+                        sesja = auth.zaloguj(username.strip(), password)
+                    except Exception as e:
+                        st.error(f"Błąd logowania: {e}")
+                    if sesja:
+                        st.session_state.update(
+                            authenticated=True, rola=sesja["rola"],
+                            user_email=sesja["email"],
+                            superadmin=sesja["superadmin"], proby_logowania=0)
+                        st.rerun()
+                    else:
+                        st.session_state['proby_logowania'] += 1
+                        st.error("Błędne dane logowania albo konto nieaktywne.")
 
-            # hmac.compare_digest — porownanie stalo-czasowe (nie zdradza,
-            # ile poczatkowych znakow bylo trafionych).
-            login_ok = hmac.compare_digest(username.encode(), dobry_login.encode())
-            haslo_ok = hmac.compare_digest(password.encode(), dobre_haslo.encode())
+        with tab_akt:
+            st.caption("Aktywacja konta utworzonego przez administratora. "
+                       "Kod otrzymasz na swój adres @doradca.lublin.pl "
+                       "(ważny 24 h).")
+            a_email = st.text_input("Adres e-mail konta:", key="akt_email")
+            a_kod = st.text_input("Kod aktywacyjny (6 cyfr):", key="akt_kod")
+            a_h1 = st.text_input("Ustaw hasło:", type="password", key="akt_h1")
+            a_h2 = st.text_input("Powtórz hasło:", type="password", key="akt_h2")
+            st.caption("Hasło: min. 8 znaków, w tym cyfra i znak specjalny.")
 
-            if login_ok and haslo_ok:
-                st.session_state['authenticated'] = True
-                st.session_state['proby_logowania'] = 0
-                st.rerun()
-            else:
-                st.session_state['proby_logowania'] += 1
-                st.error("Błędne dane logowania.")
+            if st.button("✅ Aktywuj konto", type="primary",
+                         use_container_width=True, key="akt_btn"):
+                if a_h1 != a_h2:
+                    st.error("Hasła nie są identyczne.")
+                else:
+                    try:
+                        auth.aktywuj(a_email.strip(), a_kod.strip(), a_h1)
+                        st.success("Konto aktywne. Przejdź do zakładki "
+                                   "„Logowanie” i zaloguj się.")
+                    except ValueError as e:
+                        st.error(str(e))
+                    except Exception as e:
+                        st.error(f"Nie udało się aktywować: {e}")
     st.stop()
 
 # 3. Glowne menu boczne (Nawigacja)
@@ -126,8 +169,12 @@ aktywna_zakladka = st.sidebar.radio(
 )
 
 st.sidebar.markdown("---")
+_rola_opis = "Administrator" if st.session_state.get("superadmin") else (
+    "Administrator" if st.session_state.get("rola") == "admin" else "Użytkownik")
+st.sidebar.caption(f"Zalogowano: {st.session_state.get('user_email')} · {_rola_opis}")
 if st.sidebar.button("🚪 Wyloguj się", use_container_width=True):
-    st.session_state['authenticated'] = False
+    st.session_state.update(authenticated=False, rola=None, user_email=None,
+                            superadmin=False)
     st.rerun()
 
 st.sidebar.caption(f"© 2026 {paleta.NAZWA_MARKI}")
