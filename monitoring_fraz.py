@@ -118,6 +118,17 @@ def zapewnij_tabele(db: db_core.SupabaseDB) -> None:
         )
         """
     )
+    # Właściciel subskrypcji (konto twórcy) — dokładany bezpiecznie; istniejące
+    # subskrypcje bez właściciela przypisujemy do konta administracyjnego DORADCA,
+    # żeby ich nie osierocić. Metadana dla UI (filtr „moje/wszystkie”) — skrypt
+    # wysyłkowy jej nie używa.
+    for _tab in ("obserwowane_frazy", "obserwowane_branze", "obserwowane_przedmioty"):
+        db.wykonaj(
+            f"ALTER TABLE {_tab} ADD COLUMN IF NOT EXISTS wlasciciel TEXT DEFAULT ''")
+        db.wykonaj(
+            f"UPDATE {_tab} SET wlasciciel='DORADCA' "
+            f"WHERE wlasciciel IS NULL OR wlasciciel=''")
+
     db.wykonaj(
         """
         CREATE TABLE IF NOT EXISTS monitoring_branze_wyslane (

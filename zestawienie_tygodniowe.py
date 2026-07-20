@@ -37,6 +37,7 @@ import re
 import streamlit as st
 
 import archiwum_supabase
+import auth
 from streszczacz_openrouter import _waliduj_branze, _waliduj_przedmioty
 
 # ---------------------------------------------------------------------------
@@ -403,38 +404,46 @@ def _tabela_html(rekordy: list[dict]) -> str:
 # ---------------------------------------------------------------------------
 # RENDER JEDNEJ ZAKŁADKI
 # ---------------------------------------------------------------------------
-def _zakladka(podatek: str) -> None:
-    # ── WGRYWANIE (bez wyboru tygodnia — moduł przypisze sam) ───────────────
-    plik = st.file_uploader(
-        f"Wgraj plik „Tygodniowego Researchu” dla {podatek} (DOCX zalecany, PDF też)",
-        type=["docx", "pdf"],
-        key=f"up_{podatek}",
-        help="Moduł sam odczyta daty wydania i przypisze interpretacje do właściwych tygodni.",
-    )
-    if plik is not None:
-        bajty = plik.getvalue()
-        h = hashlib.md5(bajty).hexdigest()
-        if st.session_state.get(f"hash_{podatek}") != h:
-            with st.spinner("Parsuję i przypisuję do tygodni…"):
-                wiersze = _parsuj_plik(plik.name, bajty)
-                if not wiersze:
-                    st.error(
-                        "Nie udało się odczytać tabeli z pliku. Upewnij się, że to "
-                        "plik z tabelą (Sygnatura / Data wydania / Temat / Streszczenie). "
-                        "Najpewniej działa DOCX."
-                    )
-                else:
-                    zap, pom, tyg = _zapisz_interpretacje(podatek, plik.name, wiersze)
-                    st.session_state[f"hash_{podatek}"] = h
-                    kom = f"Przypisano {zap} interpretacji"
-                    if tyg:
-                        kom += f" (okres researchu: {_etykieta_tygodnia(tyg)})"
-                    if pom:
-                        kom += f"; pominięto {pom} bez czytelnej daty wydania"
-                    st.success(kom + ".")
-                    st.rerun()
+def _moze_wgrywac() -> bool:
+    """Wgrywanie plików to uprawnienie administratora. Zwykły użytkownik
+    widzi zestawienia (tabele), ale nie wgrywa."""
+    rola = "admin" if (st.session_state.get("superadmin")
+                       or st.session_state.get("rola") == "admin") else "user"
+    return auth.ma_uprawnienie(rola, "zestawienie_wgrywanie")
 
-    st.divider()
+
+def _zakladka(podatek: str) -> None:
+    # ── WGRYWANIE (tylko administrator; user od razu przechodzi do tabel) ────
+    if _moze_wgrywac():
+        plik = st.file_uploader(
+            f"Wgraj plik „Tygodniowego Researchu” dla {podatek} (DOCX zalecany, PDF też)",
+            type=["docx", "pdf"],
+            key=f"up_{podatek}",
+            help="Moduł sam odczyta daty wydania i przypisze interpretacje do właściwych tygodni.",
+        )
+        if plik is not None:
+            bajty = plik.getvalue()
+            h = hashlib.md5(bajty).hexdigest()
+            if st.session_state.get(f"hash_{podatek}") != h:
+                with st.spinner("Parsuję i przypisuję do tygodni…"):
+                    wiersze = _parsuj_plik(plik.name, bajty)
+                    if not wiersze:
+                        st.error(
+                            "Nie udało się odczytać tabeli z pliku. Upewnij się, że to "
+                            "plik z tabelą (Sygnatura / Data wydania / Temat / Streszczenie). "
+                            "Najpewniej działa DOCX."
+                        )
+                    else:
+                        zap, pom, tyg = _zapisz_interpretacje(podatek, plik.name, wiersze)
+                        st.session_state[f"hash_{podatek}"] = h
+                        kom = f"Przypisano {zap} interpretacji"
+                        if tyg:
+                            kom += f" (okres researchu: {_etykieta_tygodnia(tyg)})"
+                        if pom:
+                            kom += f"; pominięto {pom} bez czytelnej daty wydania"
+                        st.success(kom + ".")
+                        st.rerun()
+        st.divider()
 
     # ── WYBÓR TYGODNIA I TABELA ─────────────────────────────────────────────
     tygodnie = _tygodnie_z_danymi(podatek)

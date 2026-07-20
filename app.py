@@ -150,27 +150,47 @@ if not st.session_state['authenticated']:
                         st.error(f"Nie udało się aktywować: {e}")
     st.stop()
 
-# 3. Glowne menu boczne (Nawigacja)
+# 3. Glowne menu boczne (Nawigacja) — z egzekwowaniem uprawnien.
 with st.sidebar:
     _naglowek_logo(wysokosc_px=28)
+
+# Efektywna rola: superadmin/DORADCA i konta admin -> 'admin', reszta -> 'user'.
+_ROLA = "admin" if (st.session_state.get("superadmin")
+                     or st.session_state.get("rola") == "admin") else "user"
+
+_MODULY = [
+    ("1", "Ściągacz Interpretacji"),
+    ("2", "Archiwum Interpretacji"),
+    ("3", "Analiza Wskaźnikowa"),
+    ("4", "Wyroki Sądów (WSA/NSA)"),
+    ("5", "Zestawienie Tygodniowe"),
+    ("6", "Zestawienie Tygodniowe Automat (próbna)"),
+    ("7", "Monitoring i Powiadomienia"),
+    ("8", "Wyszukiwarka Interpretacji"),
+    ("9", "Ustawienia Systemu"),
+]
+
+# Pozycje bez uprawnien: kłódka + wyszarzenie (są widoczne, ale wejście do
+# nich jest zablokowane także w routingu — dwie warstwy zabezpieczenia).
+_pozycje, _dozwolone_idx = [], []
+for _i, (_num, _nazwa) in enumerate(_MODULY):
+    if auth.ma_dostep(_ROLA, _num):
+        _pozycje.append(f"{_num}. {_nazwa}")
+        _dozwolone_idx.append(_i)
+    else:
+        _pozycje.append(f"🔒 {_num}. {_nazwa}")
+
+# Domyslnie zaznacz pierwszy DOSTEPNY modul (user nie wyląduje na kłódce).
+_domyslny = _dozwolone_idx[0] if _dozwolone_idx else 0
+
 aktywna_zakladka = st.sidebar.radio(
-    "Wybierz moduł:",
-    [
-        "1. Ściągacz Interpretacji",
-        "2. Archiwum Interpretacji",
-        "3. Analiza Wskaźnikowa",
-        "4. Wyroki Sądów (WSA/NSA)",
-        "5. Zestawienie Tygodniowe",
-        "6. Zestawienie Tygodniowe Automat (próbna)",
-        "7. Monitoring i Powiadomienia",
-        "8. Wyszukiwarka Interpretacji",
-        "9. Ustawienia Systemu"
-    ]
-)
+    "Wybierz moduł:", _pozycje, index=_domyslny)
+
+# Numer wybranego modulu (ignorujac ewentualny prefiks kłódki).
+_wybrany_num = aktywna_zakladka.lstrip("🔒 ").split(".")[0].strip()
 
 st.sidebar.markdown("---")
-_rola_opis = "Administrator" if st.session_state.get("superadmin") else (
-    "Administrator" if st.session_state.get("rola") == "admin" else "Użytkownik")
+_rola_opis = "Administrator" if _ROLA == "admin" else "Użytkownik"
 st.sidebar.caption(f"Zalogowano: {st.session_state.get('user_email')} · {_rola_opis}")
 if st.sidebar.button("🚪 Wyloguj się", use_container_width=True):
     st.session_state.update(authenticated=False, rola=None, user_email=None,
@@ -179,27 +199,30 @@ if st.sidebar.button("🚪 Wyloguj się", use_container_width=True):
 
 st.sidebar.caption(f"© 2026 {paleta.NAZWA_MARKI}")
 
-# 4. System routingu (Przelaczanie modulow)
-if aktywna_zakladka.startswith("1."):
+# 4. Routing — z twardą blokadą dostępu (druga warstwa).
+if not auth.ma_dostep(_ROLA, _wybrany_num):
+    st.title("🔒 Brak uprawnień")
+    st.warning(
+        "Ta sekcja jest dostępna wyłącznie dla administratora. "
+        "Wybierz inny moduł z menu po lewej."
+    )
+    st.stop()
+
+if _wybrany_num == "1":
     raporty.run_module()
-elif aktywna_zakladka.startswith("2."):
+elif _wybrany_num == "2":
     eksplorator_archiwum.run_module()
-elif aktywna_zakladka.startswith("3."):
+elif _wybrany_num == "3":
     cfo_analyzer.run_module()
-elif aktywna_zakladka.startswith("4."):
+elif _wybrany_num == "4":
     eksplorator_wyrokow.run_module()
-elif aktywna_zakladka.startswith("5."):
+elif _wybrany_num == "5":
     zestawienie_tygodniowe.pokaz_zestawienie_tygodniowe()
-elif aktywna_zakladka.startswith("6."):
+elif _wybrany_num == "6":
     zestawienie_automat.pokaz_zestawienie_automat()
-elif aktywna_zakladka.startswith("7."):
+elif _wybrany_num == "7":
     monitoring_ui.pokaz_monitoring()
-elif aktywna_zakladka.startswith("8."):
+elif _wybrany_num == "8":
     wyszukiwarka_klasyfikacji.pokaz_wyszukiwarke()
-elif aktywna_zakladka.startswith("9."):
+elif _wybrany_num == "9":
     ustawienia_systemu.pokaz_ustawienia()
-else:
-    # Obsluga zakladek, ktore sa dopiero w planach
-    nazwa_modulu = aktywna_zakladka.split('. ')[1] if '. ' in aktywna_zakladka else 'Modul'
-    st.title(f"🛠️ {nazwa_modulu}")
-    st.info("Ta funkcjonalność jest obecnie w fazie projektowania i zostanie dodana w przyszłości.", icon="ℹ️")

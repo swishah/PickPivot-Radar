@@ -23,6 +23,7 @@ import re
 import streamlit as st
 
 import archiwum_supabase
+import auth
 import monitoring_fraz as mfr
 from streszczacz_openrouter import BRANZE, PRZEDMIOTY
 
@@ -49,6 +50,24 @@ def _zapewnij_tabele() -> bool:
 
 def _email_poprawny(e: str) -> bool:
     return bool(re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]{2,}$", e or ""))
+
+
+def _ja() -> str:
+    return st.session_state.get("user_email") or "DORADCA"
+
+
+def _admin() -> bool:
+    return (st.session_state.get("superadmin")
+            or st.session_state.get("rola") == "admin")
+
+
+def _filtr_wlasciciela(alias: str = "") -> tuple[str, tuple]:
+    """Zwraca (fragment WHERE, parametry). Admin widzi wszystko; user tylko
+    swoje (po koncie twórcy)."""
+    kol = (alias + "." if alias else "") + "wlasciciel"
+    if _admin():
+        return "", ()
+    return f" AND {kol} = %s", (_ja(),)
 
 
 def _teraz() -> str:
@@ -94,26 +113,28 @@ def _zakladka_frazy() -> None:
         else:
             _wykonaj(
                 """INSERT INTO obserwowane_frazy
-                     (fraza, email, podatek, aktywna, utworzono)
-                   VALUES (%s,%s,%s,TRUE,%s)
+                     (fraza, email, podatek, aktywna, utworzono, wlasciciel)
+                   VALUES (%s,%s,%s,TRUE,%s,%s)
                    ON CONFLICT (fraza, email, podatek)
                    DO UPDATE SET aktywna = TRUE""",
-                (f, e, p, _teraz()),
+                (f, e, p, _teraz(), _ja()),
             )
             st.success(f"Obserwuję frazę „{f}” ({podatek}) → {e}")
             st.rerun()
 
     st.divider()
+    _w, _p = _filtr_wlasciciela()
     frazy = _zapytaj(
-        "SELECT id, fraza, email, podatek FROM obserwowane_frazy "
-        "WHERE aktywna = TRUE ORDER BY email, fraza"
+        "SELECT id, fraza, email, podatek, wlasciciel FROM obserwowane_frazy "
+        "WHERE aktywna = TRUE" + _w + " ORDER BY email, fraza", _p or None
     )
     if not frazy:
         st.info("Brak aktywnych fraz.")
     for f in frazy:
         c1, c2, c3, c4 = st.columns([3, 3, 1, 1])
         c1.markdown(f"**„{f['fraza']}”**")
-        c2.markdown(f"{f['email']}")
+        c2.markdown(f"{f['email']}"
+                    + (f"  ·  _twórca: {f['wlasciciel']}_" if _admin() else ""))
         c3.markdown(f"`{f['podatek'] or 'wszystkie'}`")
         if c4.button("🗑️", key=f"mf_usun_{f['id']}", help="Przestań obserwować"):
             _wykonaj("UPDATE obserwowane_frazy SET aktywna=FALSE WHERE id=%s",
@@ -149,18 +170,19 @@ def _zakladka_branze() -> None:
         else:
             _wykonaj(
                 """INSERT INTO obserwowane_branze
-                     (branza, email, aktywna, utworzono)
-                   VALUES (%s,%s,TRUE,%s)
+                     (branza, email, aktywna, utworzono, wlasciciel)
+                   VALUES (%s,%s,TRUE,%s,%s)
                    ON CONFLICT (branza, email) DO UPDATE SET aktywna = TRUE""",
-                (branza, e, _teraz()),
+                (branza, e, _teraz(), _ja()),
             )
             st.success(f"Subskrypcja: branża {branza} → {e}")
             st.rerun()
 
     st.divider()
+    _w, _p = _filtr_wlasciciela()
     subs = _zapytaj(
-        "SELECT id, branza, email FROM obserwowane_branze "
-        "WHERE aktywna = TRUE ORDER BY email, branza"
+        "SELECT id, branza, email, wlasciciel FROM obserwowane_branze "
+        "WHERE aktywna = TRUE" + _w + " ORDER BY email, branza", _p or None
     )
     if not subs:
         st.info("Brak subskrypcji.")
@@ -225,18 +247,19 @@ def _zakladka_przedmioty() -> None:
         else:
             _wykonaj(
                 """INSERT INTO obserwowane_przedmioty
-                     (przedmiot, podatek, email, aktywna, utworzono)
-                   VALUES (%s,%s,%s,TRUE,%s)
+                     (przedmiot, podatek, email, aktywna, utworzono, wlasciciel)
+                   VALUES (%s,%s,%s,TRUE,%s,%s)
                    ON CONFLICT (przedmiot, email) DO UPDATE SET aktywna = TRUE""",
-                (przedmiot, podatek, e, _teraz()),
+                (przedmiot, podatek, e, _teraz(), _ja()),
             )
             st.success(f"Subskrypcja: {przedmiot} ({podatek}) → {e}")
             st.rerun()
 
     st.divider()
+    _w, _p = _filtr_wlasciciela()
     subs = _zapytaj(
-        "SELECT id, przedmiot, podatek, email FROM obserwowane_przedmioty "
-        "WHERE aktywna = TRUE ORDER BY email, podatek, przedmiot"
+        "SELECT id, przedmiot, podatek, email, wlasciciel FROM obserwowane_przedmioty "
+        "WHERE aktywna = TRUE" + _w + " ORDER BY email, podatek, przedmiot", _p or None
     )
     if not subs:
         st.info("Brak subskrypcji.")
