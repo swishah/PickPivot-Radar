@@ -137,12 +137,16 @@ def _trafienia(db: db_core.SupabaseDB) -> list[dict]:
     return db.wykonaj(
         f"""
         SELECT f.id AS fraza_id, f.fraza, f.email, f.podatek AS fraza_podatek,
-               d.id AS dokument_id, d.podatek, d.sygnatura, d.data_wyd, d.link
+               d.id AS dokument_id, d.podatek, d.sygnatura, d.data_wyd, d.link,
+               s.temat, s.streszczenie,
+               COALESCE(s.branze, '') AS branze,
+               COALESCE(s.przedmiot, '') AS przedmiot
         FROM obserwowane_frazy f
         JOIN dokumenty d
           ON (f.podatek = '' OR f.podatek = d.podatek)
          AND (d.tekst ILIKE '%%' || f.fraza || '%%'
               OR d.sygnatura ILIKE '%%' || f.fraza || '%%')
+        LEFT JOIN streszczenia_auto s ON s.dokument_id = d.id
         WHERE f.aktywna = TRUE
           AND d.pobrano_at >= now() - interval '{OKNO_DNI} days'
           AND NOT EXISTS (
@@ -166,6 +170,31 @@ def _oznacz_wyslane(db: db_core.SupabaseDB, pary: list[dict]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+def _blok_streszczenia(t: dict) -> list[str]:
+    """Wspólny fragment maila: temat, branża, przedmiot i streszczenie
+    (gdy dostępne). Dla fraz streszczenie może jeszcze nie istnieć —
+    wtedy adnotacja zamiast pustego miejsca."""
+    linie = []
+    if t.get("temat"):
+        linie.append(f"     Temat: {t['temat']}")
+    kl = []
+    if t.get("branze"):
+        kl.append(f"branża: {t['branze']}")
+    if t.get("przedmiot"):
+        kl.append(f"przedmiot: {t['przedmiot']}")
+    if kl:
+        linie.append("     (" + "; ".join(kl) + ")")
+    streszcz = (t.get("streszczenie") or "").strip()
+    if streszcz:
+        linie.append("     Streszczenie:")
+        linie.append(f"       {streszcz}")
+    else:
+        linie.append("     Streszczenie: jeszcze niegotowe — pojawi się po "
+                     "najbliższym przebiegu automatu streszczeń.")
+    return linie
+
+
 def _tresc_maila(trafienia: list[dict]) -> str:
     linie = ["Nowe interpretacje pasujące do obserwowanych fraz",
              "(Skaner Doradca — monitoring fraz)", ""]
@@ -180,6 +209,8 @@ def _tresc_maila(trafienia: list[dict]) -> str:
                          f"(wydana {data})")
             if t.get("link"):
                 linie.append(f"     {t['link']}")
+            linie.extend(_blok_streszczenia(t))
+            linie.append("")
         linie.append("")
     linie.append("— Wiadomość wygenerowana automatycznie. Frazy zarządzasz "
                  "w aplikacji, moduł „Monitoring Fraz”.")
@@ -223,7 +254,9 @@ def _trafienia_branz(db: db_core.SupabaseDB) -> list[dict]:
         """
         SELECT b.id AS sub_id, b.branza, b.email,
                d.id AS dokument_id, d.podatek, d.sygnatura, d.data_wyd, d.link,
-               s.temat
+               s.temat, s.streszczenie,
+               COALESCE(s.branze, '') AS branze,
+               COALESCE(s.przedmiot, '') AS przedmiot
         FROM obserwowane_branze b
         JOIN streszczenia_auto s
           ON s.branze ILIKE '%%' || b.branza || '%%'
@@ -263,10 +296,10 @@ def _tresc_maila_branze(trafienia: list[dict]) -> str:
         for t in lista:
             data = str(t["data_wyd"])[:10]
             linie.append(f"   • [{t['podatek']}] {t['sygnatura']} (wydana {data})")
-            if t.get("temat"):
-                linie.append(f"     Temat: {t['temat']}")
             if t.get("link"):
                 linie.append(f"     {t['link']}")
+            linie.extend(_blok_streszczenia(t))
+            linie.append("")
         linie.append("")
     linie.append("— Wiadomość wygenerowana automatycznie. Branże zarządzasz "
                  "w aplikacji, moduł „Monitoring Branż”.")
@@ -286,7 +319,9 @@ def _trafienia_przedmiotow(db: db_core.SupabaseDB) -> list[dict]:
         """
         SELECT p.id AS sub_id, p.przedmiot, p.podatek AS sub_podatek, p.email,
                d.id AS dokument_id, d.podatek, d.sygnatura, d.data_wyd, d.link,
-               s.temat
+               s.temat, s.streszczenie,
+               COALESCE(s.branze, '') AS branze,
+               COALESCE(s.przedmiot, '') AS przedmiot
         FROM obserwowane_przedmioty p
         JOIN streszczenia_auto s
           ON s.przedmiot ILIKE '%%' || p.przedmiot || '%%'
@@ -326,10 +361,10 @@ def _tresc_maila_przedmioty(trafienia: list[dict]) -> str:
         for t in lista:
             data = str(t["data_wyd"])[:10]
             linie.append(f"   • [{t['podatek']}] {t['sygnatura']} (wydana {data})")
-            if t.get("temat"):
-                linie.append(f"     Temat: {t['temat']}")
             if t.get("link"):
                 linie.append(f"     {t['link']}")
+            linie.extend(_blok_streszczenia(t))
+            linie.append("")
         linie.append("")
     linie.append("— Wiadomość wygenerowana automatycznie. Obszary zarządzasz "
                  "w aplikacji, moduł „Monitoring Przedmiotów”.")
