@@ -19,11 +19,15 @@ from __future__ import annotations
 import csv
 import datetime as dt
 import io
+import smtplib
 import zipfile
+from email.mime.text import MIMEText
+from email.utils import formataddr
 
 import streamlit as st
 
 import archiwum_supabase
+import auth
 
 # Kolumna dokumenty.tekst_search jest GENEROWANA (tsvector) — nie eksportujemy
 # jej (odtworzy się sama po imporcie) i pomijamy w schemacie.
@@ -136,8 +140,137 @@ def _zbuduj_zip(bez_tekstow: bool, pasek) -> tuple[bytes, list[str]]:
 # ---------------------------------------------------------------------------
 # WEJŚCIE
 # ---------------------------------------------------------------------------
+# ZARZĄDZANIE KONTAMI (tylko admin)
+# ---------------------------------------------------------------------------
+def _wyslij_kod(email: str, kod: str, cel: str) -> tuple[bool, str]:
+    """Wysyła kod na adres konta przez SMTP z sekcji [smtp] Streamlit Secrets.
+    Zwraca (sukces, komunikat_bledu)."""
+    try:
+        cfg = st.secrets["smtp"]
+        host, port = cfg["host"], int(cfg.get("port", 587))
+        user, haslo = cfg["user"], cfg["password"]
+        nadawca = cfg.get("from", user)
+    except Exception:
+        return False, "Brak lub niepełna sekcja [smtp] w Secrets."
+
+    tresc = (
+        f"Cześć,\n\n{cel} dla konta {email} w systemie Skaner Doradca.\n\n"
+        f"Twój kod: {kod}\n\n"
+        f"Kod jest ważny 24 godziny. Wpisz go w aplikacji w zakładce "
+        f"„Pierwsze logowanie / aktywacja” razem z adresem e-mail i nowym "
+        f"hasłem (min. 8 znaków, w tym cyfra i znak specjalny).\n\n"
+        f"— Skaner Doradca"
+    )
+    msg = MIMEText(tresc, "plain", "utf-8")
+    msg["Subject"] = "Aktywacja konta — Skaner Doradca"
+    msg["From"] = formataddr(("Skaner Doradca", nadawca))
+    msg["To"] = email
+    try:
+        with smtplib.SMTP(host, port, timeout=30) as s:
+            s.starttls()
+            s.login(user, haslo)
+            s.sendmail(nadawca, [email], msg.as_string())
+        return True, ""
+    except Exception as e:
+        return False, str(e)
+
+
+def _po_wygenerowaniu_kodu(email: str, kod: str, cel: str) -> None:
+    """Wysyła kod mailem; gdy się nie uda — pokazuje go adminowi na ekranie."""
+    ok, blad = _wyslij_kod(email, kod, cel)
+    if ok:
+        st.success(f"Kod wysłany na {email}. Ważny 24 h.")
+    else:
+        st.warning(
+            f"Nie udało się wysłać maila ({blad}). Przekaż użytkownikowi "
+            f"kod ręcznie — jest ważny 24 h:"
+        )
+        st.code(kod, language=None)
+
+
+def _panel_kont() -> None:
+    # Widoczny wyłącznie dla administratora (i konta zaszytego DORADCA).
+    rola = st.session_state.get("rola")
+    if not auth.ma_uprawnienie(rola, "zarzadzanie_kontami"):
+        return
+
+    st.subheader("Zarządzanie kontami")
+    try:
+        auth.zapewnij_tabele()
+    except Exception as e:
+        st.error(f"Nie udało się przygotować tabeli kont: {e}")
+        return
+
+    # ── Tworzenie konta ─────────────────────────────────────────────────────
+    with st.expander("➕ Utwórz nowe konto", expanded=False):
+        c1, c2 = st.columns([3, 1])
+        with c1:
+            nowy_email = st.text_input(
+                f"Adres e-mail ({auth.DOMENA})", key="kont_email")
+        with c2:
+            etykieta_rola = st.selectbox(
+                "Rola", ["Użytkownik", "Administrator"], key="kont_rola")
+        if st.button("Utwórz konto i wyślij kod", type="primary", key="kont_utworz"):
+            rola_val = "admin" if etykieta_rola == "Administrator" else "user"
+            try:
+                kod = auth.utworz_konto(nowy_email.strip().lower(), rola_val)
+                st.success(f"Konto utworzone: {nowy_email.strip().lower()} "
+                           f"({etykieta_rola}).")
+                _po_wygenerowaniu_kodu(nowy_email.strip().lower(), kod,
+                                       "Utworzono konto")
+            except ValueError as e:
+                st.error(str(e))
+            except Exception as e:
+                st.error(f"Nie udało się utworzyć konta: {e}")
+
+    # ── Lista kont ──────────────────────────────────────────────────────────
+    try:
+        konta = auth.lista_uzytkownikow()
+    except Exception as e:
+        st.error(f"Nie udało się pobrać listy kont: {e}")
+        return
+
+    st.caption("Konto administracyjne „DORADCA” jest zaszyte i nie figuruje "
+               "na tej liście (awaryjny dostęp).")
+    if not konta:
+        st.info("Brak kont bazodanowych. Utwórz pierwsze powyżej.")
+        return
+
+    _ETYKIETY_STATUS = {"oczekuje": "⏳ oczekuje na aktywację",
+                        "aktywne": "✅ aktywne", "nieaktywne": "⛔ nieaktywne"}
+    for u in konta:
+        c1, c2, c3, c4 = st.columns([3, 2, 2, 2])
+        c1.markdown(f"**{u['email']}**")
+        c2.markdown("Administrator" if u["rola"] == "admin" else "Użytkownik")
+        c3.markdown(_ETYKIETY_STATUS.get(u["status"], u["status"]))
+        with c4:
+            if u["status"] != "nieaktywne":
+                if st.button("Reset hasła", key=f"kont_reset_{u['id']}",
+                             help="Wygeneruj nowy kod; użytkownik ustawi hasło "
+                                  "od nowa przez aktywację"):
+                    try:
+                        kod = auth.wygeneruj_nowy_kod(u["email"])
+                        _po_wygenerowaniu_kodu(u["email"], kod, "Reset hasła")
+                    except Exception as e:
+                        st.error(f"Nie udało się: {e}")
+                if st.button("Dezaktywuj", key=f"kont_deakt_{u['id']}",
+                             help="Konto nie będzie mogło się logować "
+                                  "(dane i alerty zostają)"):
+                    auth.dezaktywuj(u["email"])
+                    st.rerun()
+            else:
+                if st.button("Aktywuj ponownie", key=f"kont_reakt_{u['id']}",
+                             help="Odblokuj konto (jeśli ma ustawione hasło)"):
+                    auth.aktywuj_ponownie(u["email"])
+                    st.rerun()
+
+
+# ---------------------------------------------------------------------------
 def pokaz_ustawienia() -> None:
     st.header("🛠️ Ustawienia Systemu")
+
+    _panel_kont()
+    st.divider()
 
     st.subheader("Backup bazy danych")
     st.caption(
