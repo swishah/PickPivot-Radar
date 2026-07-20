@@ -13,6 +13,7 @@ import zestawienie_automat
 import monitoring_ui
 import ustawienia_systemu
 import wyszukiwarka_klasyfikacji
+import aktywnosc_systemu
 import auth
 
 # Logo dolaczone bezposrednio w kodzie (base64) - dziala niezaleznie od
@@ -167,7 +168,8 @@ _MODULY = [
     ("6", "Zestawienie Tygodniowe Automat (próbna)"),
     ("7", "Monitoring i Powiadomienia"),
     ("8", "Wyszukiwarka Interpretacji"),
-    ("9", "Ustawienia Systemu"),
+    ("9", "Aktywność systemu"),
+    ("10", "Ustawienia Systemu"),
 ]
 
 # Pozycje bez uprawnien: kłódka + wyszarzenie (są widoczne, ale wejście do
@@ -199,6 +201,12 @@ if st.sidebar.button("🚪 Wyloguj się", use_container_width=True):
 
 st.sidebar.caption(f"© 2026 {paleta.NAZWA_MARKI}")
 
+# Powiadomienie o dzisiejszej aktywności — dymek raz na sesję.
+try:
+    aktywnosc_systemu.toast_dzis()
+except Exception:
+    pass
+
 # 4. Routing — z twardą blokadą dostępu (druga warstwa).
 if not auth.ma_dostep(_ROLA, _wybrany_num):
     st.title("🔒 Brak uprawnień")
@@ -225,4 +233,6 @@ elif _wybrany_num == "7":
 elif _wybrany_num == "8":
     wyszukiwarka_klasyfikacji.pokaz_wyszukiwarke()
 elif _wybrany_num == "9":
+    aktywnosc_systemu.pokaz_aktywnosc()
+elif _wybrany_num == "10":
     ustawienia_systemu.pokaz_ustawienia()

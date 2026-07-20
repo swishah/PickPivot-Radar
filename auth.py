@@ -41,7 +41,8 @@ UPRAWNIENIA = {
     "6": {"admin", "user"},             # Zestawienie Automat
     "7": {"admin", "user"},             # Monitoring (user: tylko własne)
     "8": {"admin", "user"},             # Wyszukiwarka
-    "9": {"admin"},                     # Ustawienia Systemu
+    "9": {"admin", "user"},             # Aktywność systemu (wszyscy)
+    "10": {"admin"},                    # Ustawienia Systemu
 }
 
 # Uprawnienia szczegółowe (nie-modułowe), sprawdzane wewnątrz modułów:
