@@ -36,6 +36,10 @@ from email.utils import formataddr
 import db_core
 
 OKNO_DNI = int(os.environ.get("MONITORING_OKNO_DNI") or "3")
+# Próg zakresu streszczania — spójny z automatem (streszczanie_auto.py).
+# Interpretacje wydane wcześniej nigdy nie są streszczane, więc alertów fraz
+# dla nich nie wstrzymujemy.
+DATA_START_STRESZCZ = os.environ.get("STRESZCZ_DATA_START") or "2026-07-15"
 
 
 # ---------------------------------------------------------------------------
@@ -389,7 +393,24 @@ def main() -> int:
 
     # ── kanał 1: frazy ──────────────────────────────────────────────────────
     trafienia = _trafienia(db)
-    print(f"[monitoring] Frazy | okno: {OKNO_DNI} dni | nowych trafień: {len(trafienia)}")
+    # Wstrzymanie: jeśli interpretacja jest w zakresie streszczania
+    # (data_wyd >= STRESZCZ_DATA_START), a streszczenie jeszcze nie powstało —
+    # NIE wysyłamy i NIE oznaczamy jako wysłane. Dzięki łańcuchowi workflow
+    # (synchronizacja → streszczanie → monitoring) streszczenie zwykle już jest;
+    # gdyby jednak automat trafił na limit, alert dośle się w kolejnym cyklu —
+    # już ze streszczeniem. Interpretacje spoza zakresu (starsze, których automat
+    # nigdy nie streści) wysyłamy od razu, bez czekania w nieskończoność.
+    gotowe, wstrzymane = [], 0
+    for t in trafienia:
+        ma_streszcz = bool((t.get("streszczenie") or "").strip())
+        w_zakresie = str(t.get("data_wyd") or "") >= DATA_START_STRESZCZ
+        if not ma_streszcz and w_zakresie:
+            wstrzymane += 1
+            continue
+        gotowe.append(t)
+    trafienia = gotowe
+    print(f"[monitoring] Frazy | okno: {OKNO_DNI} dni | do wysłania: {len(trafienia)}"
+          + (f" | wstrzymano do streszczenia: {wstrzymane}" if wstrzymane else ""))
     wg_adresu: dict[str, list[dict]] = {}
     for t in trafienia:
         wg_adresu.setdefault(t["email"].strip(), []).append(t)

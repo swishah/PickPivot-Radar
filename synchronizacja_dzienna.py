@@ -84,6 +84,18 @@ def main():
     print("PickPivot — Codzienna Synchronizacja Interpretacji (3:00)")
     print("=" * 70)
 
+    # Okno synchronizacji sterowane z workflow: częste przebiegi trzymają wąskie
+    # okno (świeżość), a jeden nocny sięga szerzej (łapie publikacje opóźnione —
+    # np. interpretacje wydane ponownie po wyroku, wpadające do Eureki z kilku-
+    # tygodniowym poślizgiem). Brak zmiennej = zachowanie domyślne z raport_silnik.
+    okno_env = os.environ.get("OKNO_SYNCHRONIZACJI_DNI")
+    if okno_env:
+        try:
+            silnik.OKNO_SYNCHRONIZACJI_DNI = int(okno_env)
+            print(f"Okno synchronizacji nadpisane z env: {okno_env} dni.")
+        except ValueError:
+            print(f"Nieprawidłowe OKNO_SYNCHRONIZACJI_DNI='{okno_env}' — używam domyślnego.")
+
     data_od, data_do, opis_okresu = silnik.zakres_synchronizacji()
     print(f"Okno: {data_od.date()} — {data_do.date()} ({opis_okresu})")
 
@@ -110,12 +122,17 @@ def main():
         else:
             print(f"\nWyczerpano {MAKS_PROB_CALEGO_SYNC} prob. Wysylam powiadomienie z tym co udalo sie zebrac.")
 
-    # ── POWIADOMIENIE MAILOWE — CODZIENNIE, ZAWSZE ──────────────────────────
+    # ── POWIADOMIENIE MAILOWE — tylko na wyznaczonym przebiegu ──────────────
+    # Przy kilku przebiegach dziennie mail-podsumowanie wysyłamy raz (nocny
+    # przebieg ustawia SYNC_MAIL=1); pozostałe są ciche, żeby nie zasypać skrzynki.
+    wyslij_mail = os.environ.get("SYNC_MAIL", "1") == "1"
     gmail_adres = os.environ.get("GMAIL_ADRES")
     gmail_haslo = os.environ.get("GMAIL_HASLO_APLIKACJI")
     odbiorca    = os.environ.get("EMAIL_ODBIORCA", gmail_adres)
 
-    if not gmail_adres or not gmail_haslo:
+    if not wyslij_mail:
+        print("\nMail-podsumowanie wyciszony dla tego przebiegu (SYNC_MAIL != 1).")
+    elif not gmail_adres or not gmail_haslo:
         print("\nBrak konfiguracji email — pomijam powiadomienie.")
     else:
         silnik.wyslij_email_synchronizacja_dzienna(
