@@ -21,14 +21,13 @@ on:
   # Zimą (CET = UTC+1) te same wpisy wypadną o godzinę WCZEŚNIEJ czasu
   # polskiego (okno 7:30–15:30 przesunie się na 6:30–14:30). Liczba i rytm
   # przebiegów pozostają bez zmian.
-  schedule:
-    - cron: '0 23 * * *'
-    - cron: '0 2 * * *'
-    - cron: '30 5 * * *'
-    - cron: '0 9 * * *'
-    - cron: '30 12 * * *'
-    - cron: '0 16 * * *'
-    - cron: '30 19 * * *'
+  # Łańcuch: uruchamiane automatycznie PO zakończeniu synchronizacji
+  # dziennej (każdy z 6 przebiegów) — świeżo pobrane interpretacje są
+  # streszczane od razu, zanim odpali się monitoring. Idempotentne:
+  # streszcza tylko brakujące, więc wielokrotne wywołania nie szkodzą.
+  workflow_run:
+    workflows: ["Synchronizacja dzienna"]
+    types: [completed]
 
   # Ręczne uruchomienie z zakładki Actions (np. do testu albo doraźnego
   # dociągnięcia po dodaniu interpretacji).

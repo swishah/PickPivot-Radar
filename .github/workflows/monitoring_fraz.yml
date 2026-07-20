@@ -4,10 +4,12 @@ on:
   # Sprawdzanie po nocnej synchronizacji oraz po popołudniowych pobraniach
   # na żądanie. Skrypt jest idempotentny (para fraza+dokument wysyłana raz),
   # więc częstsze przebiegi nie dublują maili. Czasy w UTC.
-  schedule:
-    - cron: '30 2 * * *'   # ~4:30 PL (lato) — tuż po nocnej synchronizacji
-    - cron: '0 12 * * *'   # ~14:00 PL — łapie pobrania z przedpołudnia
-    - cron: '0 18 * * *'   # ~20:00 PL — łapie pobrania z popołudnia
+  # Łańcuch: uruchamiane PO zakończeniu automatu streszczeń — mamy więc
+  # pewność, że dla świeżych interpretacji streszczenia już istnieją,
+  # zanim wyślemy powiadomienia.
+  workflow_run:
+    workflows: ["Automat streszczen (OpenRouter)"]
+    types: [completed]
 
   workflow_dispatch: {}
 

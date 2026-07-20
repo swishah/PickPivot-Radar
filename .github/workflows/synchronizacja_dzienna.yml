@@ -1,22 +1,43 @@
 name: Synchronizacja dzienna
 
 on:
+  # 6 przebiegów dziennie, czasy polskie (lato): 9, 12, 15, 18, 21 i 00.
+  # Cron działa w UTC, więc godziny są przeliczone (−2 h względem czasu
+  # polskiego letniego). Zimą wypadną o godzinę wcześniej czasu polskiego —
+  # dla ruchomego okna synchronizacji ta różnica nie ma znaczenia.
+  #   PL 09:00 -> 07:00 UTC
+  #   PL 12:00 -> 10:00 UTC
+  #   PL 15:00 -> 13:00 UTC
+  #   PL 18:00 -> 16:00 UTC
+  #   PL 21:00 -> 19:00 UTC
+  #   PL 00:00 -> 22:00 UTC  (przebieg „nocny”: szersze okno + mail-podsumowanie)
   schedule:
-    # GitHub Actions cron dziala w UTC. Polska to UTC+1 (zima) / UTC+2 (lato).
-    # 02:00 UTC = ok. 3:00 czasu polskiego zima / 4:00 lato.
-    # Dla joba synchronizacyjnego z ruchomym oknem 3 dni ta 1-godzinna
-    # sezonowa roznica nie ma znaczenia - okno i tak nachodzi na siebie
-    # miedzy kolejnymi dniami.
-    - cron: '0 2 * * *'
+    - cron: '0 7 * * *'
+    - cron: '0 10 * * *'
+    - cron: '0 13 * * *'
+    - cron: '0 16 * * *'
+    - cron: '0 19 * * *'
+    - cron: '0 22 * * *'
 
-  # Mozliwosc recznego uruchomienia z zakladki Actions (do testow)
   workflow_dispatch:
+    inputs:
+      okno_dni:
+        description: 'Okno synchronizacji w dniach (puste = 10)'
+        required: false
+        default: ''
+      wyslij_mail:
+        description: 'Wyslac mail-podsumowanie? (1 = tak)'
+        required: false
+        default: '0'
+
+concurrency:
+  group: synchronizacja-dzienna
+  cancel-in-progress: false
 
 jobs:
   synchronizuj:
     runs-on: ubuntu-latest
     timeout-minutes: 180
-
     steps:
       - name: Pobierz kod repozytorium
         uses: actions/checkout@v4
@@ -31,18 +52,38 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests PyPDF2 python-docx beautifulsoup4 lxml psycopg2-binary
 
-      - name: Uruchom synchronizacje dzienna
+      - name: Parametry przebiegu (okno + mail)
+        id: params
+        run: |
+          # Przebieg nocny (PL 00:00 = 22:00 UTC): szersze okno 30 dni (lapie
+          # publikacje opoznione) i jedyny mail-podsumowanie w ciagu doby.
+          # Pozostale przebiegi: wask okno 10 dni, bez maila.
+          if [ "${{ github.event.schedule }}" = "0 22 * * *" ]; then
+            echo "okno=30" >> "$GITHUB_OUTPUT"
+            echo "mail=1"  >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            OKNO_IN="${{ github.event.inputs.okno_dni }}"
+            echo "okno=${OKNO_IN:-10}" >> "$GITHUB_OUTPUT"
+            echo "mail=${{ github.event.inputs.wyslij_mail }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "okno=10" >> "$GITHUB_OUTPUT"
+            echo "mail=0"  >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Uruchom synchronizacje
         env:
-          SUPABASE_HOST:          ${{ secrets.SUPABASE_HOST }}
-          SUPABASE_PORT:          ${{ secrets.SUPABASE_PORT }}
-          SUPABASE_DB:            ${{ secrets.SUPABASE_DB }}
-          SUPABASE_USER:          ${{ secrets.SUPABASE_USER }}
-          SUPABASE_PASSWORD:      ${{ secrets.SUPABASE_PASSWORD }}
-          GMAIL_ADRES:            ${{ secrets.GMAIL_ADRES }}
-          GMAIL_HASLO_APLIKACJI:  ${{ secrets.GMAIL_HASLO_APLIKACJI }}
-          EMAIL_ODBIORCA:         ${{ secrets.EMAIL_ODBIORCA }}
+          SUPABASE_HOST:            ${{ secrets.SUPABASE_HOST }}
+          SUPABASE_PORT:            ${{ secrets.SUPABASE_PORT }}
+          SUPABASE_DB:              ${{ secrets.SUPABASE_DB }}
+          SUPABASE_USER:            ${{ secrets.SUPABASE_USER }}
+          SUPABASE_PASSWORD:        ${{ secrets.SUPABASE_PASSWORD }}
+          GMAIL_ADRES:              ${{ secrets.GMAIL_ADRES }}
+          GMAIL_HASLO_APLIKACJI:    ${{ secrets.GMAIL_HASLO_APLIKACJI }}
+          EMAIL_ODBIORCA:           ${{ secrets.EMAIL_ODBIORCA }}
+          OKNO_SYNCHRONIZACJI_DNI:  ${{ steps.params.outputs.okno }}
+          SYNC_MAIL:                ${{ steps.params.outputs.mail }}
         run: python synchronizacja_dzienna.py
 
       - name: Podsumowanie
         if: always()
-        run: echo "Synchronizacja zakonczona. Sprawdz logi powyzej dla szczegolow."
+        run: echo "Synchronizacja zakonczona (okno ${{ steps.params.outputs.okno }} dni, mail ${{ steps.params.outputs.mail }})."
