@@ -29,7 +29,7 @@ import streamlit as st
 
 import archiwum_supabase
 import streszczacz_openrouter as sopen
-from zestawienie_tygodniowe import _etykieta_tygodnia, _klucz_tygodnia, _tabela_html
+from zestawienie_tygodniowe import _pasek_sortowania, _tabela_html
 
 PODATKI = ["PIT", "CIT", "VAT", "AKCYZA"]
 MAKS_TYGODNI = 104
@@ -227,15 +227,8 @@ def _api_key() -> str | None:
 # ZAKŁADKA
 # ---------------------------------------------------------------------------
 def _zakladka(podatek: str, model: str, klucz_api: str | None) -> None:
-    c1, c2 = st.columns([2, 1])
-    with c1:
-        sort_kol = st.selectbox(
-            "Sortuj według", list(SORT_KOLUMNY.keys()),
-            key=f"auto_sort_{podatek}")
-    with c2:
-        kierunek = st.selectbox(
-            "Kolejność", ["malejąco", "rosnąco"], key=f"auto_kier_{podatek}")
-    malejaco = kierunek == "malejąco"
+    sort_kol, malejaco = _pasek_sortowania(
+        f"auto_{podatek}", list(SORT_KOLUMNY.keys()), "Data wydania")
 
     rekordy = _wiersze(podatek, model, sort_kol, malejaco)
     if not rekordy:

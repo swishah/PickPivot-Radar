@@ -328,6 +328,33 @@ def _fmt(iso: str) -> str:
         return str(iso)
 
 
+def _pasek_sortowania(prefix: str, kolumny: list[str], domyslna: str) -> tuple[str, bool]:
+    """Klikalne nagłówki kolumn zamiast list wyboru. Klik ustawia sortowanie po
+    danej kolumnie (malejąco); ponowny klik w tę samą kolumnę odwraca kierunek.
+    Aktywna kolumna oznaczona strzałką ▼/▲. Zwraca (kolumna, malejąco)."""
+    kl_kol, kl_dir = f"{prefix}_sortkol", f"{prefix}_malej"
+    if kl_kol not in st.session_state:
+        st.session_state[kl_kol] = domyslna
+    if kl_dir not in st.session_state:
+        st.session_state[kl_dir] = True
+
+    st.caption("Sortuj — kliknij kolumnę (ponowny klik odwraca kolejność):")
+    kolumny_widget = st.columns(len(kolumny))
+    for c, etykieta in zip(kolumny_widget, kolumny):
+        aktywna = st.session_state[kl_kol] == etykieta
+        strzalka = (" ▼" if st.session_state[kl_dir] else " ▲") if aktywna else ""
+        if c.button(etykieta + strzalka, key=f"{prefix}_sb_{etykieta}",
+                    use_container_width=True,
+                    type="primary" if aktywna else "secondary"):
+            if aktywna:
+                st.session_state[kl_dir] = not st.session_state[kl_dir]
+            else:
+                st.session_state[kl_kol] = etykieta
+                st.session_state[kl_dir] = True
+            st.rerun()
+    return st.session_state[kl_kol], st.session_state[kl_dir]
+
+
 def _tabela_html(rekordy: list[dict]) -> str:
     txt, txt2, bord, head = _kolory()
     th = (f"padding:8px 10px;border-bottom:2px solid {head};color:{head};"
@@ -447,15 +474,10 @@ def _zakladka(podatek: str) -> None:
                         st.rerun()
         st.divider()
 
-    # ── SORTOWANA TABELA (zamiast podziału na tygodnie) ─────────────────────
-    c1, c2 = st.columns([2, 1])
-    with c1:
-        sort_kol = st.selectbox("Sortuj według", list(SORT_KOLUMNY_5.keys()),
-                                key=f"tyg_sort_{podatek}")
-    with c2:
-        kierunek = st.selectbox("Kolejność", ["malejąco", "rosnąco"],
-                                key=f"tyg_kier_{podatek}")
-    rekordy = _interpretacje_sortowane(podatek, sort_kol, kierunek == "malejąco")
+    # ── SORTOWANA TABELA (klik w nagłówek kolumny) ──────────────────────────
+    sort_kol, malejaco = _pasek_sortowania(
+        f"tyg_{podatek}", list(SORT_KOLUMNY_5.keys()), "Data wydania")
+    rekordy = _interpretacje_sortowane(podatek, sort_kol, malejaco)
     if not rekordy:
         st.info("Brak wgranych streszczeń dla tego podatku. Wgraj plik powyżej.")
         return
