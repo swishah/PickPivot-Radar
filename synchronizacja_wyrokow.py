@@ -60,6 +60,17 @@ def _okno(dni: int):
 
 
 # ---------------------------------------------------------------------------
+# TRYB LEKKI — tylko sygnatury i metadane, BEZ pelnych tekstow
+# ---------------------------------------------------------------------------
+# Gdy WYROKI_TYLKO_METADANE=1 (domyslnie): zapisujemy sygnature + metadane
+# (sad, data, podatek, symbole, hasla, wynik, prawomocnosc), ale POMIJAMY
+# ciezkie pola sentencja/uzasadnienie i caly strumien uzasadnien. To niemal
+# zeruje przyrost miejsca (metadane to kilkaset bajtow na wyrok), a dzieki
+# upsertowi uzasadnienia mozna dociagnac pozniej: ustaw WYROKI_TYLKO_METADANE=0.
+TYLKO_METADANE = (os.environ.get("WYROKI_TYLKO_METADANE", "1") == "1")
+
+
+# ---------------------------------------------------------------------------
 # STRUMIEN 1 — METADANE (wszystko nowe, takze bez uzasadnienia)
 # ---------------------------------------------------------------------------
 def strumien_metadane(db, sesja, formularz, log=print):
@@ -94,6 +105,12 @@ def strumien_metadane(db, sesja, formularz, log=print):
                 if (w.get("rodzaj") or "").strip().lower().startswith("postanowienie"):
                     pominiete += 1
                     continue
+                if TYLKO_METADANE:
+                    # Tryb lekki: nie zapisujemy pelnych tekstow — tylko
+                    # sygnatura + metadane. Uzasadnienia dojda przy WYROKI_TYLKO_METADANE=0.
+                    w["sentencja"] = ""
+                    w["uzasadnienie"] = ""
+                    w["status_tresci"] = db_wyroki.STATUS_OCZEKUJE
                 db_wyroki.zapisz_wyrok(db, w)
                 nowych += 1
                 if k % 10 == 0 or k == len(nowe_id):
@@ -281,6 +298,14 @@ def main():
     print("Polaczenie z Supabase OK, schemat wyrokow gotowy.")
 
     wybrane = {s.strip() for s in args.strumienie.split(",")}
+    if TYLKO_METADANE:
+        # Bez pobierania uzasadnien (strumien 2). Metadane (1) + prawomocnosc (3)
+        # zostaja; oznaczanie trwalych brakow tez pomijamy (dzieje sie w str. 2),
+        # zeby po powrocie do pelnego trybu wszystkie rekordy dostaly uzasadnienia.
+        wybrane.discard("2")
+        print("TRYB LEKKI (WYROKI_TYLKO_METADANE=1): zapisuje tylko sygnatury "
+              "i metadane, bez uzasadnien. Ustaw WYROKI_TYLKO_METADANE=0, aby "
+              "dociagnac pelne teksty.")
 
     # ── ZEWNETRZNA PETLA PONAWIANIA CALEGO PRZEBIEGU ────────────────────────
     # Strumienie sa idempotentne (upsert + pomijanie znanych id), wiec
