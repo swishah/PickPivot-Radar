@@ -101,19 +101,71 @@ def _harmonogramy() -> list[dict]:
         except Exception:
             continue
         crony = re.findall(r"cron:\s*['\"]([^'\"]+)['\"]", tekst)
-        if not crony:
-            continue  # workflow bez harmonogramu (np. tylko dispatch)
+        # Workflow uruchamiane łańcuchowo: "workflows: [\"Nazwa rodzica\"]"
+        m_run = re.search(r"workflow_run:.*?workflows:\s*\[([^\]]*)\]", tekst, re.S)
+        rodzice = []
+        if m_run:
+            rodzice = [x.strip().strip("'\"") for x in m_run.group(1).split(",")
+                       if x.strip()]
+        if not crony and not rodzice:
+            continue  # workflow tylko z ręcznym dispatch — bez harmonogramu
+
         m = re.search(r"^name:\s*(.+)$", tekst, re.M)
         nazwa = m.group(1).strip().strip("'\"") if m else os.path.basename(p)
+
+        # Godziny (UTC) rozwinięte ze wszystkich wpisów cron -> (h, m)
+        godziny = set()
+        for c in crony:
+            pola = c.split()
+            if len(pola) == 5:
+                for h in _rozwin_pole(pola[1], 0, 23):
+                    for mi in _rozwin_pole(pola[0], 0, 59):
+                        godziny.add((h, mi))
         nastepne = [x for x in (_nastepne_z_cron(c, teraz) for c in crony) if x]
         wynik.append({
             "nazwa": nazwa,
             "plik": os.path.basename(p),
+            "godziny_utc": sorted(godziny),
+            "rodzice": rodzice,
             "nastepne_utc": min(nastepne) if nastepne else None,
             "crony": crony,
         })
-    wynik.sort(key=lambda r: (r["nastepne_utc"] is None, r["nastepne_utc"]))
+    # Kolejność: najpierw harmonogramy godzinowe (wg najbliższego), potem
+    # łańcuchowe w kolejności zależności (rodzic przed dzieckiem).
+    po_nazwie = {r["nazwa"]: r for r in wynik}
+
+    def _glebokosc(r, _widziane=None):
+        if r["godziny_utc"]:
+            return 0
+        _widziane = _widziane or set()
+        if r["nazwa"] in _widziane:
+            return 99
+        _widziane.add(r["nazwa"])
+        gl = [_glebokosc(po_nazwie[n], _widziane) for n in r["rodzice"]
+              if n in po_nazwie]
+        return 1 + (max(gl) if gl else 0)
+
+    for r in wynik:
+        r["_glebokosc"] = _glebokosc(r)
+    wynik.sort(key=lambda r: (
+        r["_glebokosc"],
+        r["nastepne_utc"] or dt.datetime.max.replace(tzinfo=dt.timezone.utc)))
     return wynik
+
+
+def _godziny_pl(godziny_utc: list) -> str:
+    """Lista godzin UTC -> napis 'HH:MM, HH:MM…' w czasie polskim."""
+    if not godziny_utc or not _TZ:
+        if not godziny_utc:
+            return "—"
+    dzis = dt.datetime.now(dt.timezone.utc).date()
+    czasy = []
+    for h, mi in godziny_utc:
+        u = dt.datetime(dzis.year, dzis.month, dzis.day, h, mi,
+                        tzinfo=dt.timezone.utc)
+        lok = u.astimezone(_TZ) if _TZ else u
+        czasy.append(lok.strftime("%H:%M"))
+    return ", ".join(sorted(set(czasy)))
 
 
 def _na_czas_pl(u: dt.datetime | None) -> str:
@@ -264,19 +316,46 @@ def pokaz_aktywnosc() -> None:
     st.divider()
 
     # ── HARMONOGRAMY ────────────────────────────────────────────────────────
-    st.subheader("Najbliższe uruchomienia automatów")
+    st.subheader("Harmonogram automatów")
     harmo = _harmonogramy()
     if not harmo:
         st.caption("Nie znaleziono plików workflow z harmonogramem "
                    "(.github/workflows/*.yml).")
-    for h in harmo:
-        kiedy = _na_czas_pl(h["nastepne_utc"])
-        za = _za_ile(h["nastepne_utc"])
-        st.markdown(f"**{h['nazwa']}** — następne: {kiedy}"
-                    + (f"  ·  _{za}_" if za else ""))
-    if harmo:
-        st.caption("Czasy w strefie polskiej. Harmonogram odczytany wprost "
-                   "z plików workflow.")
+    else:
+        wiersze = []
+        for h in harmo:
+            if h["godziny_utc"]:
+                godziny = _godziny_pl(h["godziny_utc"])
+            elif h["rodzice"]:
+                godziny = "po zakończeniu: " + ", ".join(h["rodzice"])
+            else:
+                godziny = "—"
+            nastepne = _na_czas_pl(h["nastepne_utc"]) if h["nastepne_utc"] else "—"
+            za = _za_ile(h["nastepne_utc"]) if h["nastepne_utc"] else ""
+            if za:
+                nastepne = f"{nastepne} ({za})"
+            wiersze.append((h["nazwa"], godziny, nastepne))
+
+        nag = ("padding:8px 10px;border-bottom:2px solid #386520;color:#386520;"
+               "text-align:left;font-size:0.85rem;font-weight:700;")
+        kom = "padding:8px 10px;border-bottom:1px solid #ddd;vertical-align:top;"
+        thtml = (
+            f"<table style='width:100%;border-collapse:collapse;font-size:0.9rem;'>"
+            f"<tr><th style='{nag}'>Czynność</th>"
+            f"<th style='{nag}'>Godziny (czas polski)</th>"
+            f"<th style='{nag}white-space:nowrap;'>Najbliższe uruchomienie</th></tr>"
+        )
+        for nazwa, godziny, nastepne in wiersze:
+            thtml += (
+                f"<tr><td style='{kom}'><b>{nazwa}</b></td>"
+                f"<td style='{kom}'>{godziny}</td>"
+                f"<td style='{kom}white-space:nowrap;'>{nastepne}</td></tr>"
+            )
+        thtml += "</table>"
+        st.markdown(thtml, unsafe_allow_html=True)
+        st.caption("Godziny w czasie polskim (przeliczone z UTC; zimą wypadną "
+                   "o godzinę wcześniej). „Po zakończeniu…” — uruchamiane "
+                   "łańcuchowo, zaraz po wskazanym automacie.")
 
     st.divider()
 
