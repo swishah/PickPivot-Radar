@@ -237,6 +237,24 @@ def zaloguj(email: str, haslo: str) -> dict | None:
     return {"email": e, "rola": u["rola"], "superadmin": u["rola"] == "admin"}
 
 
+def zmien_haslo(email: str, stare: str, nowe: str) -> None:
+    """Zmiana własnego hasła przez zalogowanego użytkownika. Weryfikuje stare,
+    waliduje i hashuje nowe. Rzuca ValueError z komunikatem przy błędzie."""
+    e = (email or "").strip().lower()
+    u = pobierz_uzytkownika(e)
+    if not u or u["status"] != "aktywne":
+        raise ValueError("Konto nieaktywne lub nie istnieje.")
+    if not _sprawdz_hash(stare, u.get("haslo_hash") or ""):
+        raise ValueError("Obecne hasło jest nieprawidłowe.")
+    blad = haslo_wymogi(nowe)
+    if blad:
+        raise ValueError(blad)
+    if _sprawdz_hash(nowe, u.get("haslo_hash") or ""):
+        raise ValueError("Nowe hasło musi różnić się od obecnego.")
+    _db().wykonaj("UPDATE users SET haslo_hash=%s WHERE email=%s",
+                  (_hash(nowe), e))
+
+
 def dezaktywuj(email: str) -> None:
     _db().wykonaj("UPDATE users SET status='nieaktywne' WHERE email=%s",
                   ((email or "").strip().lower(),))

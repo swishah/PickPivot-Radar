@@ -184,10 +184,17 @@ _MODULY = [
 
 # Pozycje bez uprawnien: kłódka + wyszarzenie (są widoczne, ale wejście do
 # nich jest zablokowane także w routingu — dwie warstwy zabezpieczenia).
+# Odznaka „nowe” przy module „Mój panel” — liczba trafień od ostatniej wizyty.
+try:
+    _nowych = panel_uzytkownika.liczba_nowych(st.session_state.get("user_email") or "DORADCA")
+except Exception:
+    _nowych = 0
+
 _pozycje, _dozwolone_idx = [], []
 for _i, (_num, _nazwa) in enumerate(_MODULY):
+    _odznaka = f"  🔴 {_nowych}" if (_num == "10" and _nowych) else ""
     if auth.ma_dostep(_ROLA, _num):
-        _pozycje.append(f"{_num}. {_nazwa}")
+        _pozycje.append(f"{_num}. {_nazwa}{_odznaka}")
         _dozwolone_idx.append(_i)
     else:
         _pozycje.append(f"🔒 {_num}. {_nazwa}")
