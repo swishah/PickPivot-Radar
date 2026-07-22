@@ -29,7 +29,8 @@ import streamlit as st
 
 import archiwum_supabase
 import streszczacz_openrouter as sopen
-from zestawienie_tygodniowe import _pasek_sortowania, _tabela_html
+from zestawienie_tygodniowe import (_pasek_sortowania, _pasek_stron,
+                                    _tabela_html, _zapytaj_cache)
 
 PODATKI = ["PIT", "CIT", "VAT", "AKCYZA"]
 MAKS_TYGODNI = 104
@@ -136,12 +137,20 @@ SORT_KOLUMNY = {
 }
 
 
-def _wiersze(podatek: str, model: str, sort_kol: str, malejaco: bool) -> list[dict]:
-    """50 wierszy do wyświetlenia (bez pełnych tekstów), z wybranym sortowaniem.
-    Data publikacji = pobrano_at (data dogrania do bazy)."""
+def _policz(podatek: str) -> int:
+    r = _zapytaj_cache(
+        "SELECT COUNT(*) AS n FROM dokumenty WHERE podatek=%s AND data_wyd >= %s",
+        (podatek, DATA_START))
+    return int(r[0]["n"]) if r else 0
+
+
+def _wiersze(podatek: str, model: str, sort_kol: str, malejaco: bool,
+             offset: int = 0, limit: int = 50) -> list[dict]:
+    """Strona wierszy do wyświetlenia (bez pełnych tekstów), z sortowaniem.
+    Data publikacji = pobrano_at (data dogrania do bazy). Cache'owane."""
     kol = SORT_KOLUMNY.get(sort_kol, "d.data_wyd")
     kier = "DESC" if malejaco else "ASC"
-    rows = _zapytaj(
+    rows = _zapytaj_cache(
         f"""
         SELECT d.id, d.sygnatura, d.data_wyd, d.pobrano_at,
                s.temat AS s_temat, s.streszczenie AS s_streszcz,
@@ -152,10 +161,11 @@ def _wiersze(podatek: str, model: str, sort_kol: str, malejaco: bool) -> list[di
                ON s.dokument_id = d.id AND s.model = %s
         WHERE d.podatek = %s AND d.data_wyd >= %s
         ORDER BY {kol} {kier} NULLS LAST, d.sygnatura
-        LIMIT {LIMIT_WIERSZY}
+        LIMIT {int(limit)} OFFSET {int(offset)}
         """,
         (model, podatek, DATA_START),
     )
+    rows = [dict(r) for r in rows]  # kopia — nie modyfikujemy obiektu w cache
     for r in rows:
         r["_ma"] = _sensowne(r.get("s_streszcz"))
         r["temat"] = (r.get("s_temat") or "") if r["_ma"] else ""
@@ -169,7 +179,7 @@ def _wiersze(podatek: str, model: str, sort_kol: str, malejaco: bool) -> list[di
 def _brakujace(podatek: str, model: str) -> list[dict]:
     """Interpretacje bez sensownego streszczenia (do przycisku i licznika).
     Lekko — bez pełnych tekstów; tekst dobierany dopiero dla wsadu."""
-    rows = _zapytaj(
+    rows = _zapytaj_cache(
         """
         SELECT d.id, d.sygnatura, d.data_wyd, s.streszczenie AS s_streszcz
         FROM dokumenty d
@@ -230,8 +240,8 @@ def _zakladka(podatek: str, model: str, klucz_api: str | None) -> None:
     sort_kol, malejaco = _pasek_sortowania(
         f"auto_{podatek}", list(SORT_KOLUMNY.keys()), "Data wydania")
 
-    rekordy = _wiersze(podatek, model, sort_kol, malejaco)
-    if not rekordy:
+    total = _policz(podatek)
+    if total == 0:
         st.info("Brak interpretacji w bazie dla tego podatku "
                 f"(od {DATA_START}).")
         return
@@ -239,8 +249,8 @@ def _zakladka(podatek: str, model: str, klucz_api: str | None) -> None:
     brak = _brakujace(podatek, model)
 
     k1, k2 = st.columns(2)
-    k1.metric(f"Pokazano (limit {LIMIT_WIERSZY})", len(rekordy))
-    k2.metric("Bez streszczenia (wszystkie)", len(brak))
+    k1.metric("Interpretacji (wszystkie)", total)
+    k2.metric("Bez streszczenia", len(brak))
 
     if brak:
         if not klucz_api:
@@ -259,8 +269,11 @@ def _zakladka(podatek: str, model: str, klucz_api: str | None) -> None:
                 for r in wsad:
                     r["tekst"] = teksty.get(r["id"], "")
                 _streszczaj(wsad, podatek, model, klucz_api)
+                st.cache_data.clear()  # świeże streszczenia mają być widoczne
                 st.rerun()
 
+    offset = _pasek_stron(f"auto_{podatek}", total, LIMIT_WIERSZY)
+    rekordy = _wiersze(podatek, model, sort_kol, malejaco, offset, LIMIT_WIERSZY)
     st.markdown(_tabela_html(rekordy), unsafe_allow_html=True)
     st.caption(
         f"„Data publikacji” = data dogrania do bazy (pobrania). Sortuj po niej, "

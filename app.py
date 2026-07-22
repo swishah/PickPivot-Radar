@@ -13,6 +13,7 @@ import zestawienie_automat
 import monitoring_ui
 import ustawienia_systemu
 import wyszukiwarka_klasyfikacji
+import panel_uzytkownika
 import aktywnosc_systemu
 import auth
 
@@ -67,8 +68,16 @@ for _k, _v in {"authenticated": False, "rola": None, "user_email": None,
         st.session_state[_k] = _v
 
 # Tabela kont tworzy się sama; błąd bazy nie może zablokować logowania DORADCA.
-try:
+# Guard prędkości: CREATE TABLE IF NOT EXISTS wykonuje się tylko RAZ (cache_resource),
+# a nie przy każdym przeładowaniu strony — to była główna przyczyna „lagów”.
+@st.cache_resource(show_spinner=False)
+def _tabela_kont_gotowa() -> bool:
     auth.zapewnij_tabele()
+    return True
+
+
+try:
+    _tabela_kont_gotowa()
 except Exception:
     pass
 
@@ -169,7 +178,8 @@ _MODULY = [
     ("7", "Monitoring i Powiadomienia"),
     ("8", "Wyszukiwarka Interpretacji"),
     ("9", "Aktywność systemu"),
-    ("10", "Ustawienia Systemu"),
+    ("10", "Mój panel"),
+    ("11", "Ustawienia Systemu"),
 ]
 
 # Pozycje bez uprawnien: kłódka + wyszarzenie (są widoczne, ale wejście do
@@ -235,4 +245,6 @@ elif _wybrany_num == "8":
 elif _wybrany_num == "9":
     aktywnosc_systemu.pokaz_aktywnosc()
 elif _wybrany_num == "10":
+    panel_uzytkownika.pokaz_panel()
+elif _wybrany_num == "11":
     ustawienia_systemu.pokaz_ustawienia()

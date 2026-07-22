@@ -57,8 +57,40 @@ def _zapytaj(sql: str, parametry: tuple | None = None) -> list[dict]:
     return archiwum_supabase._get_db().wykonaj(sql, parametry, fetch=True)
 
 
+@st.cache_data(ttl=90, show_spinner=False)
+def _zapytaj_cache(sql: str, parametry: tuple | None = None) -> list[dict]:
+    """Cache'owany odczyt (wspólny dla modułów 5 i 6). Przy powtórnych
+    przeładowaniach strony (sortowanie, zmiana strony) nie odpytuje ponownie
+    zdalnej bazy — to główne źródło „lagów”. TTL 90 s; po zapisach wołaj
+    st.cache_data.clear()."""
+    return archiwum_supabase._get_db().wykonaj(sql, parametry, fetch=True)
+
+
 def _wykonaj(sql: str, parametry: tuple | None = None) -> int:
     return archiwum_supabase._get_db().wykonaj(sql, parametry, fetch=False)
+
+
+def _pasek_stron(prefix: str, total: int, na_stronie: int = 50) -> int:
+    """Nawigacja stron dla dużych list. Zwraca OFFSET do zapytania."""
+    strony = max(1, (total + na_stronie - 1) // na_stronie)
+    kl = f"{prefix}_str"
+    st.session_state.setdefault(kl, 0)
+    strona = min(st.session_state[kl], strony - 1)
+    c1, c2, c3 = st.columns([1, 2, 1])
+    if c1.button("← Poprzednia", key=f"{prefix}_prev", disabled=strona <= 0,
+                 use_container_width=True):
+        st.session_state[kl] = strona - 1
+        st.rerun()
+    c2.markdown(
+        f"<div style='text-align:center;padding-top:6px;'>Strona "
+        f"<b>{strona + 1}</b> z {strony} · łącznie {total}</div>",
+        unsafe_allow_html=True,
+    )
+    if c3.button("Następna →", key=f"{prefix}_next", disabled=strona >= strony - 1,
+                 use_container_width=True):
+        st.session_state[kl] = strona + 1
+        st.rerun()
+    return strona * na_stronie
 
 
 @st.cache_resource(show_spinner=False)
@@ -288,13 +320,20 @@ LIMIT_WIERSZY_5 = 50
 SORT_KOLUMNY_5 = {"Data wydania": "data_wyd", "Sygnatura": "sygnatura"}
 
 
-def _interpretacje_sortowane(podatek: str, sort_kol: str,
-                             malejaco: bool) -> list[dict]:
-    """50 wgranych interpretacji danego podatku, z wybranym sortowaniem.
-    Bez daty publikacji — w module 5 byłaby zawsze datą wgrania pliku."""
+def _policz_interpretacje(podatek: str) -> int:
+    r = _zapytaj_cache(
+        "SELECT COUNT(*) AS n FROM interpretacje_streszczenia WHERE podatek=%s",
+        (podatek,))
+    return int(r[0]["n"]) if r else 0
+
+
+def _interpretacje_sortowane(podatek: str, sort_kol: str, malejaco: bool,
+                             offset: int = 0, limit: int = 50) -> list[dict]:
+    """Strona wgranych interpretacji danego podatku, z sortowaniem. Bez daty
+    publikacji — w module 5 byłaby zawsze datą wgrania pliku."""
     kol = SORT_KOLUMNY_5.get(sort_kol, "data_wyd")
     kier = "DESC" if malejaco else "ASC"
-    return _zapytaj(
+    return _zapytaj_cache(
         f"""
         SELECT sygnatura, data_wyd, temat, streszczenie,
                COALESCE(branza, '') AS branza,
@@ -302,7 +341,7 @@ def _interpretacje_sortowane(podatek: str, sort_kol: str,
         FROM interpretacje_streszczenia
         WHERE podatek = %s
         ORDER BY {kol} {kier} NULLS LAST, sygnatura
-        LIMIT {LIMIT_WIERSZY_5}
+        LIMIT {int(limit)} OFFSET {int(offset)}
         """,
         (podatek,),
     )
@@ -471,20 +510,21 @@ def _zakladka(podatek: str) -> None:
                         if pom:
                             kom += f"; pominięto {pom} bez czytelnej daty wydania"
                         st.success(kom + ".")
+                        st.cache_data.clear()
                         st.rerun()
         st.divider()
 
     # ── SORTOWANA TABELA (klik w nagłówek kolumny) ──────────────────────────
     sort_kol, malejaco = _pasek_sortowania(
         f"tyg_{podatek}", list(SORT_KOLUMNY_5.keys()), "Data wydania")
-    rekordy = _interpretacje_sortowane(podatek, sort_kol, malejaco)
-    if not rekordy:
+    total = _policz_interpretacje(podatek)
+    if total == 0:
         st.info("Brak wgranych streszczeń dla tego podatku. Wgraj plik powyżej.")
         return
-
+    offset = _pasek_stron(f"tyg_{podatek}", total, LIMIT_WIERSZY_5)
+    rekordy = _interpretacje_sortowane(podatek, sort_kol, malejaco,
+                                       offset, LIMIT_WIERSZY_5)
     st.markdown(_tabela_html(rekordy), unsafe_allow_html=True)
-    st.caption(f"Pokazano {len(rekordy)} interpretacji {podatek} "
-               f"(limit {LIMIT_WIERSZY_5}, sortowanie: {sort_kol.lower()}).")
 
 
 # ---------------------------------------------------------------------------
