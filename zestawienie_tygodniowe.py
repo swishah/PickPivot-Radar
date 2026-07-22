@@ -397,8 +397,13 @@ def _pasek_sortowania(prefix: str, kolumny: list[str], domyslna: str) -> tuple[s
 def _tabela_html(rekordy: list[dict]) -> str:
     txt, txt2, bord, head = _kolory()
     th = (f"padding:8px 10px;border-bottom:2px solid {head};color:{head};"
-          f"text-align:left;font-size:0.85rem;font-weight:700;")
-    style = f"width:100%;border-collapse:collapse;font-size:0.9rem;color:{txt};"
+          f"text-align:left;font-size:0.85rem;font-weight:700;"
+          f"word-break:break-word;overflow-wrap:anywhere;")
+    # table-layout:fixed — szerokości kolumn wynikają z <colgroup>, a NIE z
+    # długości treści; dzięki temu długie streszczenie zawija się w swojej
+    # kolumnie zamiast rozpychać tabelę i psuć układ strony.
+    style = (f"width:100%;table-layout:fixed;border-collapse:collapse;"
+             f"font-size:0.9rem;color:{txt};")
 
     # Kolumny warunkowe — pojawiają się tylko, gdy jakikolwiek wiersz je ma.
     z_branza = any((r.get("branza") or "").strip() for r in rekordy)
@@ -407,18 +412,33 @@ def _tabela_html(rekordy: list[dict]) -> str:
     # w module 5 rekordy jej nie mają, więc kolumna się nie renderuje.
     z_publikacja = any(r.get("data_publikacji") for r in rekordy)
 
+    # Szerokości kolumn pomocniczych (wąskie, ustalone). „Streszczenie” NIE ma
+    # zadanej szerokości — bierze całą pozostałą przestrzeń, więc jest zawsze
+    # najszersze (i tym szersze, im mniej pozostałych kolumn).
+    cols = ["<col style='width:3%'>",     # L.p.
+            "<col style='width:11%'>",    # Sygnatura
+            "<col style='width:7%'>"]     # Data wydania
+    if z_publikacja:
+        cols.append("<col style='width:7%'>")
+    cols.append("<col style='width:13%'>")   # Temat
+    if z_branza:
+        cols.append("<col style='width:8%'>")
+    if z_przedmiot:
+        cols.append("<col style='width:11%'>")
+    cols.append("<col>")                    # Streszczenie — reszta szerokości
+    colgroup = "<colgroup>" + "".join(cols) + "</colgroup>"
+
     kol_branza_naglowek = (
-        f"<th style='{th}white-space:nowrap;'>Branża</th>" if z_branza else "")
+        f"<th style='{th}'>Branża</th>" if z_branza else "")
     kol_przedmiot_naglowek = (
         f"<th style='{th}'>Przedmiot</th>" if z_przedmiot else "")
     kol_publikacja_naglowek = (
-        f"<th style='{th}white-space:nowrap;'>Data publikacji</th>"
-        if z_publikacja else "")
+        f"<th style='{th}'>Data publikacji</th>" if z_publikacja else "")
     naglowek = (
         f"<tr>"
-        f"<th style='{th}width:36px;'>L.p.</th>"
-        f"<th style='{th}white-space:nowrap;'>Sygnatura</th>"
-        f"<th style='{th}white-space:nowrap;'>Data wydania</th>"
+        f"<th style='{th}'>L.p.</th>"
+        f"<th style='{th}'>Sygnatura</th>"
+        f"<th style='{th}'>Data wydania</th>"
         f"{kol_publikacja_naglowek}"
         f"<th style='{th}'>Temat</th>"
         f"{kol_branza_naglowek}"
@@ -430,7 +450,8 @@ def _tabela_html(rekordy: list[dict]) -> str:
     wiersze = []
     for i, r in enumerate(rekordy, start=1):
         td = (f"padding:8px 10px;border-bottom:1px solid {bord};"
-              f"vertical-align:top;color:{txt};")
+              f"vertical-align:top;color:{txt};"
+              f"word-break:break-word;overflow-wrap:anywhere;")
 
         kom_publikacja = ""
         if z_publikacja:
@@ -445,8 +466,7 @@ def _tabela_html(rekordy: list[dict]) -> str:
         kom_branza = ""
         if z_branza:
             br = html.escape((r.get("branza") or "").strip())
-            kom_branza = (f"<td style='{td}white-space:nowrap;"
-                          f"font-size:0.82rem;'>{br}</td>")
+            kom_branza = f"<td style='{td}font-size:0.82rem;'>{br}</td>"
         kom_przedmiot = ""
         if z_przedmiot:
             pr = html.escape((r.get("przedmiot") or "").strip())
@@ -455,7 +475,7 @@ def _tabela_html(rekordy: list[dict]) -> str:
         wiersze.append(
             f"<tr>"
             f"<td style='{td}'>{i}</td>"
-            f"<td style='{td}white-space:nowrap;font-family:monospace;font-size:0.82rem;'>"
+            f"<td style='{td}font-family:monospace;font-size:0.8rem;'>"
             f"{html.escape(r['sygnatura'])}</td>"
             f"<td style='{td}white-space:nowrap;'>{_fmt(r['data_wyd'])}</td>"
             f"{kom_publikacja}"
@@ -466,7 +486,7 @@ def _tabela_html(rekordy: list[dict]) -> str:
             f"</tr>"
         )
 
-    return f"<table style='{style}'>{naglowek}{''.join(wiersze)}</table>"
+    return f"<table style='{style}'>{colgroup}{naglowek}{''.join(wiersze)}</table>"
 
 
 # ---------------------------------------------------------------------------
