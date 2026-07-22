@@ -94,9 +94,15 @@ def _sensowne(s: str | None) -> bool:
 
 
 def _do_streszczenia(db: db_core.SupabaseDB, model: str) -> list[dict]:
+    # WAŻNE dla egressu: NIE pobieramy tu d.tekst. Wcześniej zapytanie
+    # ściągało pełne teksty WSZYSTKICH interpretacji od DATA_START przy każdym
+    # przebiegu (także dawno streszczonych) — to był największy pojedynczy
+    # wyciek egressu. Teraz czytamy tylko lekkie metadane i małe streszczenie
+    # do wykrycia braków; pełne teksty dobieramy dopiero dla przetwarzanej
+    # garstki (_tekst_dla), już po ograniczeniu do MAKS_NA_RUN.
     rows = db.wykonaj(
         """
-        SELECT d.id, d.podatek, d.sygnatura, d.data_wyd, d.tekst,
+        SELECT d.id, d.podatek, d.sygnatura, d.data_wyd,
                s.streszczenie AS s_streszcz
         FROM dokumenty d
         LEFT JOIN streszczenia_auto s
@@ -109,6 +115,15 @@ def _do_streszczenia(db: db_core.SupabaseDB, model: str) -> list[dict]:
         fetch=True,
     )
     return [r for r in rows if not _sensowne(r.get("s_streszcz"))]
+
+
+def _tekst_dla(db: db_core.SupabaseDB, ids: list) -> dict:
+    """Pełne teksty TYLKO dla podanych dokumentów (przetwarzana garstka)."""
+    if not ids:
+        return {}
+    rows = db.wykonaj("SELECT id, tekst FROM dokumenty WHERE id = ANY(%s)",
+                      (ids,), fetch=True)
+    return {r["id"]: r.get("tekst") or "" for r in rows}
 
 
 def _zapisz(db: db_core.SupabaseDB, r: dict, model: str, wynik: dict) -> None:
@@ -160,6 +175,11 @@ def main() -> int:
         return 0
 
     do_zrobienia = lista[:MAKS_NA_RUN]
+    # Pełne teksty dobieramy TYLKO dla wsadu (nie dla całej listy braków) —
+    # to trzyma egress na uwięzi niezależnie od rozmiaru zaległości.
+    teksty = _tekst_dla(db, [r["id"] for r in do_zrobienia])
+    for r in do_zrobienia:
+        r["tekst"] = teksty.get(r["id"], "")
     zrobione = bledy = 0
     limit_trafiony = False
 
