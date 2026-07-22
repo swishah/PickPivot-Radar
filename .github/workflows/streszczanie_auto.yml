@@ -1,88 +1,45 @@
 name: Automat streszczen (OpenRouter)
 
 on:
-  # Harmonogram = mechanizm ponawiania. Skrypt streszcza tylko brakujące
-  # pozycje, więc każdy przebieg dogania to, co zostało.
-  #
-  # 7 przebiegów dziennie, średnio co ~3,5 h. Trzy z nich w oknie 7:30–15:30
-  # CZASU POLSKIEGO (lato, CEST = UTC+2). Cron działa w UTC, więc godziny
-  # są przeliczone (–2 h względem czasu polskiego letniego):
-  #
-  #   Czas polski (lato)  ->  UTC (cron)      w oknie 7:30–15:30?
-  #   01:00               ->  23:00 (dzień wcześniej)
-  #   04:00               ->  02:00
-  #   07:30               ->  05:30           TAK
-  #   11:00               ->  09:00           TAK
-  #   14:30               ->  12:30           TAK
-  #   18:00               ->  16:00
-  #   21:30               ->  19:30
-  #
-  # UWAGA (czas zimowy): cron jest stały w UTC i nie zna zmiany czasu.
-  # Zimą (CET = UTC+1) te same wpisy wypadną o godzinę WCZEŚNIEJ czasu
-  # polskiego (okno 7:30–15:30 przesunie się na 6:30–14:30). Liczba i rytm
-  # przebiegów pozostają bez zmian.
-  # Łańcuch: uruchamiane automatycznie PO zakończeniu synchronizacji
-  # dziennej (każdy z 6 przebiegów) — świeżo pobrane interpretacje są
-  # streszczane od razu, zanim odpali się monitoring. Idempotentne:
-  # streszcza tylko brakujące, więc wielokrotne wywołania nie szkodzą.
-  workflow_run:
-    workflows: ["Synchronizacja dzienna"]
-    types: [completed]
+  # Rozprzezony harmonogram (kontrola egressu). Czasy UTC; PL = +2 h (lato).
+  #  - dni robocze: 2x dziennie (UTC 8 i 14 = PL 10:00 i 16:00),
+  #  - weekend: "doganianie" co 3 h (UTC 6-21 = PL 8:00-23:00), bo w tygodniu
+  #    czesc streszczen nie zdazy sie zrobic przy oszczedzaniu egressu.
+  schedule:
+    - cron: '0 8,14 * * 1-5'
+    - cron: '0 6-21/3 * * 6,0'
 
-  # Ręczne uruchomienie z zakładki Actions (np. do testu albo doraźnego
-  # dociągnięcia po dodaniu interpretacji).
-  workflow_dispatch:
-    inputs:
-      model:
-        description: 'Model OpenRouter (puste = openrouter/free)'
-        required: false
-        default: ''
-      maks_na_run:
-        description: 'Ile pozycji na jedno uruchomienie'
-        required: false
-        default: '40'
+  workflow_dispatch: {}
 
 concurrency:
-  # Nie pozwól, żeby dwa przebiegi streszczały równolegle (podwójne zapytania,
-  # kolizje limitu). Nowy czeka lub zostaje pominięty.
   group: streszczanie-auto
   cancel-in-progress: false
 
 jobs:
   streszczaj:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - name: Pobierz repozytorium
         uses: actions/checkout@v4
-
       - name: Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-
-      - name: Zależności
+      - name: Zaleznosci
         run: |
           python -m pip install --upgrade pip
-          # Instalujemy z requirements.txt, żeby środowisko było identyczne
-          # jak w aplikacji (psycopg2, requests itd.).
-          pip install -r requirements.txt
-
-      - name: Streszcz brakujące
-        id: streszcz
+          pip install requests psycopg2-binary
+      - name: Streszcz brakujace
         env:
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
-          # Jeśli wolisz pojedyncze sekrety zamiast URL-a, odkomentuj i ustaw:
-          # SUPABASE_HOST: ${{ secrets.SUPABASE_HOST }}
-          # SUPABASE_USER: ${{ secrets.SUPABASE_USER }}
-          # SUPABASE_PASSWORD: ${{ secrets.SUPABASE_PASSWORD }}
-          # SUPABASE_PORT: ${{ secrets.SUPABASE_PORT }}
-          # SUPABASE_DB: ${{ secrets.SUPABASE_DB }}
-          OPENROUTER_MODEL: ${{ github.event.inputs.model }}
-          STRESZCZ_MAKS_NA_RUN: ${{ github.event.inputs.maks_na_run }}
+          SUPABASE_DB_URL:      ${{ secrets.SUPABASE_DB_URL }}
+          SUPABASE_HOST:        ${{ secrets.SUPABASE_HOST }}
+          SUPABASE_PORT:        ${{ secrets.SUPABASE_PORT }}
+          SUPABASE_DB:          ${{ secrets.SUPABASE_DB }}
+          SUPABASE_USER:        ${{ secrets.SUPABASE_USER }}
+          SUPABASE_PASSWORD:    ${{ secrets.SUPABASE_PASSWORD }}
+          OPENROUTER_API_KEY:   ${{ secrets.OPENROUTER_API_KEY }}
         run: python streszczanie_auto.py
-
       - name: Podsumowanie
         if: always()
-        run: echo "Pozostalo do streszczenia po tym przebiegu = ${{ steps.streszcz.outputs.pozostalo }}"
+        run: echo "Streszczanie zakonczone."

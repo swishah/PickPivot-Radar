@@ -1,23 +1,14 @@
 name: Synchronizacja dzienna
 
 on:
-  # 6 przebiegów dziennie, czasy polskie (lato): 9, 12, 15, 18, 21 i 00.
-  # Cron działa w UTC, więc godziny są przeliczone (−2 h względem czasu
-  # polskiego letniego). Zimą wypadną o godzinę wcześniej czasu polskiego —
-  # dla ruchomego okna synchronizacji ta różnica nie ma znaczenia.
-  #   PL 09:00 -> 07:00 UTC
-  #   PL 12:00 -> 10:00 UTC
-  #   PL 15:00 -> 13:00 UTC
-  #   PL 18:00 -> 16:00 UTC
-  #   PL 21:00 -> 19:00 UTC
-  #   PL 00:00 -> 22:00 UTC  (przebieg „nocny”: szersze okno + mail-podsumowanie)
+  # 6 przebiegow dziennie TYLKO w dni robocze (1-5). W weekend pobierania nie
+  # ma — chodza wtedy same streszczenia (doganianie). MF (KIS) w weekend i tak
+  # praktycznie nie publikuje, a poniedzialkowe okno lookback nadrobi zaleglosc.
+  # Czasy PL (lato): 9,12,15,18,21,00 -> UTC 7,10,13,16,19,22.
+  # Nocny przebieg (22:00 UTC): szersze okno 30 dni + mail-podsumowanie.
   schedule:
-    - cron: '0 7 * * *'
-    - cron: '0 10 * * *'
-    - cron: '0 13 * * *'
-    - cron: '0 16 * * *'
-    - cron: '0 19 * * *'
-    - cron: '0 22 * * *'
+    - cron: '0 7,10,13,16,19 * * 1-5'
+    - cron: '0 22 * * 1-5'
 
   workflow_dispatch:
     inputs:
@@ -58,7 +49,7 @@ jobs:
           # Przebieg nocny (PL 00:00 = 22:00 UTC): szersze okno 30 dni (lapie
           # publikacje opoznione) i jedyny mail-podsumowanie w ciagu doby.
           # Pozostale przebiegi: wask okno 10 dni, bez maila.
-          if [ "${{ github.event.schedule }}" = "0 22 * * *" ]; then
+          if [ "${{ github.event.schedule }}" = "0 22 * * 1-5" ]; then
             echo "okno=30" >> "$GITHUB_OUTPUT"
             echo "mail=1"  >> "$GITHUB_OUTPUT"
           elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then

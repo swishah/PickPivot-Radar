@@ -1,15 +1,12 @@
 name: Monitoring fraz (e-mail)
 
 on:
-  # Sprawdzanie po nocnej synchronizacji oraz po popołudniowych pobraniach
-  # na żądanie. Skrypt jest idempotentny (para fraza+dokument wysyłana raz),
-  # więc częstsze przebiegi nie dublują maili. Czasy w UTC.
-  # Łańcuch: uruchamiane PO zakończeniu automatu streszczeń — mamy więc
-  # pewność, że dla świeżych interpretacji streszczenia już istnieją,
-  # zanim wyślemy powiadomienia.
-  workflow_run:
-    workflows: ["Automat streszczen (OpenRouter)"]
-    types: [completed]
+  # Dni robocze 2x dziennie, GODZINE PO streszczaniu (UTC 9 i 15 = PL 11:00
+  # i 17:00), zeby streszczenia byly juz gotowe. Weekend: brak (w weekend
+  # chodza tylko streszczenia). Okno fraz podniesione do 5 dni, zeby weekendowa
+  # przerwa nie zgubila trafien z konca tygodnia.
+  schedule:
+    - cron: '0 9,15 * * 1-5'
 
   workflow_dispatch: {}
 
@@ -20,30 +17,34 @@ concurrency:
 jobs:
   monitoruj:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - name: Pobierz repozytorium
         uses: actions/checkout@v4
-
       - name: Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-
-      - name: Zależności
+      - name: Zaleznosci
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-
-      - name: Sprawdź frazy i wyślij powiadomienia
+          pip install requests psycopg2-binary
+      - name: Sprawdz frazy i wyslij powiadomienia
         env:
-          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
-          SUPABASE_HOST: ${{ secrets.SUPABASE_HOST }}
-          SUPABASE_USER: ${{ secrets.SUPABASE_USER }}
-          SUPABASE_PASSWORD: ${{ secrets.SUPABASE_PASSWORD }}
-          SMTP_HOST: ${{ secrets.SMTP_HOST }}
-          SMTP_PORT: ${{ secrets.SMTP_PORT }}
-          SMTP_USER: ${{ secrets.SMTP_USER }}
-          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
-          SMTP_FROM: ${{ secrets.SMTP_FROM }}
+          SUPABASE_DB_URL:      ${{ secrets.SUPABASE_DB_URL }}
+          SUPABASE_HOST:        ${{ secrets.SUPABASE_HOST }}
+          SUPABASE_PORT:        ${{ secrets.SUPABASE_PORT }}
+          SUPABASE_DB:          ${{ secrets.SUPABASE_DB }}
+          SUPABASE_USER:        ${{ secrets.SUPABASE_USER }}
+          SUPABASE_PASSWORD:    ${{ secrets.SUPABASE_PASSWORD }}
+          SMTP_HOST:            ${{ secrets.SMTP_HOST }}
+          SMTP_PORT:            ${{ secrets.SMTP_PORT }}
+          SMTP_USER:            ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD:        ${{ secrets.SMTP_PASSWORD }}
+          SMTP_FROM:            ${{ secrets.SMTP_FROM }}
+          EMAIL_ODBIORCA:       ${{ secrets.EMAIL_ODBIORCA }}
+          MONITORING_OKNO_DNI:  '5'
         run: python monitoring_fraz.py
+      - name: Podsumowanie
+        if: always()
+        run: echo "Monitoring zakonczony."
