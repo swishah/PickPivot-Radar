@@ -1,0 +1,32 @@
+name: Sprawdz taksonomie
+
+# Uruchamiany ręcznie. Wyłącznie ODCZYT — nie dotyka bazy, nie woła OpenRoutera,
+# nie zużywa żadnych limitów. Można uruchamiać dowolnie często.
+#
+# Odpowiada na jedno pytanie: czy streszczacz czyta taksonomię z bazy,
+# czy zszedł do awaryjnych stałych w kodzie.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  sprawdz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Pobierz repozytorium
+        uses: actions/checkout@v4
+
+      - name: Ustaw Pythona
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Zainstaluj zależności
+        run: pip install psycopg2-binary requests
+
+      - name: Sprawdź źródło taksonomii
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: python3 sprawdz_taksonomie.py
