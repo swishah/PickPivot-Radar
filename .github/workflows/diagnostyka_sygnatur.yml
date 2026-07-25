@@ -1,0 +1,47 @@
+name: Diagnostyka sygnatur (faza 0)
+
+# Uruchamiany WYŁĄCZNIE ręcznie — to narzędzie jednorazowe, nie ma sensu
+# trzymać go w harmonogramie. Po zakończeniu fazy 0 można plik skasować.
+#
+# Skrypt tylko CZYTA bazę (kolumny id i sygnatura z tabel dokumenty i wyroki).
+# Nie zapisuje, nie zmienia schematu, nie tworzy tabel.
+
+on:
+  workflow_dispatch:
+    inputs:
+      sygnatura:
+        description: 'Sygnatury z LEX-a, kilka rozdziel znakiem | (pionowa kreska). Puste = pełny raport.'
+        required: false
+        default: ''
+
+jobs:
+  diagnostyka:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Pobierz repozytorium
+        uses: actions/checkout@v4
+
+      - name: Ustaw Pythona
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Zainstaluj zależności
+        run: pip install psycopg2-binary
+
+      - name: Test parytetu Python/JS
+        # Node jest na runnerze dostępny domyślnie. Ten krok nie dotyka bazy —
+        # sprawdza tylko, czy obie implementacje dają identyczny wynik.
+        run: python3 test_parytet.py
+
+      - name: Diagnostyka na bazie
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          if [ -n "${{ github.event.inputs.sygnatura }}" ]; then
+            python3 diagnostyka_sygnatur.py --sprawdz "${{ github.event.inputs.sygnatura }}"
+          else
+            python3 diagnostyka_sygnatur.py
+          fi
