@@ -49,22 +49,79 @@ def _polacz() -> db_core.SupabaseDB:
     })
 
 
-def _wczytaj_z_kodu() -> tuple[list[str], dict[str, list[str]]]:
-    """Importuje stałe z modułu streszczacza."""
-    try:
-        import streszczacz_openrouter as sopen
-    except ImportError as e:
+PLIK_ZRODLOWY = "streszczacz_openrouter.py"
+
+
+def _stale_przez_ast(sciezka: str) -> dict:
+    """
+    Wyciąga stałe BRANZE i PRZEDMIOTY parsując plik, BEZ jego importowania.
+
+    DLACZEGO NIE IMPORT
+      streszczacz_openrouter importuje requests i inne biblioteki potrzebne mu
+      do pracy, ale zupełnie zbędne do odczytania dwóch list. Import wywracał
+      się na brakującej zależności, a komunikat sugerował, że nie ma pliku —
+      czyli wskazywał zupełnie nie tam, gdzie trzeba.
+
+      Parsowanie drzewa składni czyta tylko to, co potrzebne, nie wykonuje
+      żadnego kodu i nie obchodzi go, czego moduł potrzebuje do działania.
+    """
+    import ast
+
+    if not os.path.exists(sciezka):
         raise SystemExit(
-            "Nie znaleziono streszczacz_openrouter.py. Uruchom ten skrypt "
-            f"z katalogu repozytorium. ({e})"
+            f"Nie znaleziono pliku {sciezka}. Uruchom skrypt z katalogu "
+            "repozytorium, obok streszczacza."
         )
-    branze = list(getattr(sopen, "BRANZE", []))
-    przedmioty = dict(getattr(sopen, "PRZEDMIOTY", {}))
+
+    with open(sciezka, encoding="utf-8") as f:
+        drzewo = ast.parse(f.read(), filename=sciezka)
+
+    znalezione = {}
+    for wezel in drzewo.body:                      # tylko poziom modułu
+        if not isinstance(wezel, ast.Assign):
+            continue
+        for cel in wezel.targets:
+            if isinstance(cel, ast.Name) and cel.id in ("BRANZE", "PRZEDMIOTY"):
+                try:
+                    znalezione[cel.id] = ast.literal_eval(wezel.value)
+                except ValueError:
+                    # Stała zbudowana wyrażeniem, nie literałem — wtedy nie ma
+                    # innego wyjścia niż import.
+                    pass
+    return znalezione
+
+
+def _wczytaj_z_kodu() -> tuple[list[str], dict[str, list[str]]]:
+    """
+    Pobiera taksonomię ze streszczacza. Najpierw parsowanie (bezpieczne,
+    bez zależności), w ostateczności import.
+    """
+    stale = _stale_przez_ast(PLIK_ZRODLOWY)
+    zrodlo = "parsowanie pliku"
+
+    if "BRANZE" not in stale or "PRZEDMIOTY" not in stale:
+        try:
+            import streszczacz_openrouter as sopen
+            stale.setdefault("BRANZE", getattr(sopen, "BRANZE", []))
+            stale.setdefault("PRZEDMIOTY", getattr(sopen, "PRZEDMIOTY", {}))
+            zrodlo = "import modułu"
+        except ImportError as e:
+            raise SystemExit(
+                f"Nie udało się odczytać stałych z {PLIK_ZRODLOWY}.\n"
+                f"Parsowanie nie znalazło ich jako zwykłych literałów, "
+                f"a import zawiódł na zależności: {e}\n"
+                "Dołóż brakującą bibliotekę do kroku instalacji w workflow."
+            )
+
+    branze = list(stale.get("BRANZE") or [])
+    przedmioty = dict(stale.get("PRZEDMIOTY") or {})
 
     if not branze:
-        raise SystemExit("BRANZE w module są puste — nie ma czego przenosić.")
+        raise SystemExit("BRANZE są puste — nie ma czego przenosić.")
     if not przedmioty:
-        raise SystemExit("PRZEDMIOTY w module są puste — nie ma czego przenosić.")
+        raise SystemExit("PRZEDMIOTY są puste — nie ma czego przenosić.")
+
+    print(f"Źródło taksonomii: {PLIK_ZRODLOWY} ({zrodlo})")
     return branze, przedmioty
 
 
