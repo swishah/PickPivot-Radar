@@ -154,6 +154,49 @@ def rodzaj_sygnatury(znormalizowana: str) -> str:
     return "NIEZNANY"
 
 
+# ---------------------------------------------------------------------------
+# WYKRYWANIE KLUCZA PODEJRZANEGO
+# ---------------------------------------------------------------------------
+
+# Najdłuższa realna sygnatura, jaką widziałem w danych produkcyjnych, to
+# 0113-KDIPT1-1.4012.455.2026.2.MSU — 33 znaki po normalizacji. Próg 40 daje
+# zapas na dłuższe inicjały, a wciąż łapie sklejenia.
+MAKS_ROZSADNA_DLUGOSC = 40
+
+
+def podejrzany_klucz(znormalizowana: str) -> str:
+    """
+    Zwraca opis podejrzenia albo pusty łańcuch, gdy klucz wygląda zdrowo.
+
+    PO CO: normalizacja niczego nie waliduje — przyjmie każdy łańcuch i zwróci
+    klucz. Gdy ekstrakcja ze strony złapie za dużo (dwie sygnatury obok siebie,
+    sygnatura wraz z fragmentem zdania), powstaje klucz, który nigdy z niczym
+    się nie dopasuje, a użytkownik zobaczy tylko „nie ma w archiwum”. Cichy
+    błąd tego rodzaju jest gorszy niż komunikat — stąd ta kontrola.
+
+    Wykryte w praktyce: dwie sygnatury wklejone bez separatora dały klucz
+    IIFSK992/230113-KDIPT1-3.4012.513.2026.1.MK (42 znaki, rodzaj NIEZNANY).
+
+    >>> podejrzany_klucz("0114-KDIP2-2.4010.123.2026.1.AS")
+    ''
+    >>> podejrzany_klucz("IIFSK992/230113-KDIPT1-3.4012.513.2026.1.MK")
+    'klucz nietypowo długi (43 znaki) i nierozpoznanego formatu — możliwe, że to dwie sygnatury sklejone albo fragment zdania'
+    """
+    if not znormalizowana:
+        return ""
+
+    dlugi = len(znormalizowana) > MAKS_ROZSADNA_DLUGOSC
+    nieznany = rodzaj_sygnatury(znormalizowana) == "NIEZNANY"
+
+    if dlugi and nieznany:
+        return (f"klucz nietypowo długi ({len(znormalizowana)} znaki) i "
+                f"nierozpoznanego formatu — możliwe, że to dwie sygnatury "
+                f"sklejone albo fragment zdania")
+    if dlugi:
+        return f"klucz nietypowo długi ({len(znormalizowana)} znaki)"
+    return ""
+
+
 if __name__ == "__main__":
     import doctest
     wynik = doctest.testmod(verbose=False)

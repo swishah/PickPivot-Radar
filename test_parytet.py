@@ -71,6 +71,8 @@ KORPUS = [
     "ą ć ę ł ń ó ś ź ż",
     "ĄĆĘŁŃÓŚŹŻ",
     "0114-KDIP2-2.4010.123.2026.1.AS oraz I FSK 1/23",
+    # Przypadek z prawdziwego przebiegu: dwie sygnatury bez separatora.
+    "II FSK 992/23 0113-KDIPT1-3.4012.513.2026.1.MK",
 ]
 
 
@@ -80,6 +82,7 @@ def wyniki_python(korpus: list[str]) -> list[dict]:
         "norm":    ns.normalizuj_sygnature(s),
         "bez_ini": ns.klucz_bez_inicjalow(ns.normalizuj_sygnature(s)),
         "rodzaj":  ns.rodzaj_sygnatury(ns.normalizuj_sygnature(s)),
+        "podejrz": ns.podejrzany_klucz(ns.normalizuj_sygnature(s)),
     } for s in korpus]
 
 
@@ -93,7 +96,8 @@ process.stdin.on('end', () => {
   const korpus = JSON.parse(dane);
   const out = korpus.map(s => {
     const n = S.normalizuj(s);
-    return { wejscie: s, norm: n, bez_ini: S.bezInicjalow(n), rodzaj: S.rodzaj(n) };
+    return { wejscie: s, norm: n, bez_ini: S.bezInicjalow(n),
+             rodzaj: S.rodzaj(n), podejrz: S.podejrzany(n) };
   });
   process.stdout.write(JSON.stringify(out));
 });
@@ -134,7 +138,7 @@ def main() -> int:
 
     rozjazdy = []
     for a, b in zip(py, js):
-        for pole in ("norm", "bez_ini", "rodzaj"):
+        for pole in ("norm", "bez_ini", "rodzaj", "podejrz"):
             if a[pole] != b[pole]:
                 rozjazdy.append((a["wejscie"], pole, a[pole], b[pole]))
 
@@ -142,7 +146,7 @@ def main() -> int:
     print("TEST PARYTETU  Python  <->  JavaScript")
     print("=" * 74)
     print(f"Pozycji w korpusie: {len(KORPUS)}")
-    print(f"Porównań (3 pola na pozycję): {len(KORPUS) * 3}")
+    print(f"Porównań (4 pola na pozycję): {len(KORPUS) * 4}")
     print()
 
     if rozjazdy:

@@ -38,6 +38,7 @@ from normalizacja_sygnatur import (
     normalizuj_sygnature,
     klucz_bez_inicjalow,
     rodzaj_sygnatury,
+    podejrzany_klucz,
 )
 
 # Tabele do przejrzenia: (nazwa_tabeli, kolumna_id, kolumna_sygnatury, etykieta).
@@ -255,7 +256,15 @@ def sprawdz(db, surowa: str) -> int:
     klucz = normalizuj_sygnature(surowa)
     print(f"  Klucz kanoniczny: {klucz}")
     print(f"  Rozpoznany rodzaj: {rodzaj_sygnatury(klucz)}")
-    print(f"  Klucz bez inicjałów: {klucz_bez_inicjalow(klucz)}\n")
+    print(f"  Klucz bez inicjałów: {klucz_bez_inicjalow(klucz)}")
+
+    ostrzezenie = podejrzany_klucz(klucz)
+    if ostrzezenie:
+        print()
+        print(f"  >>> UWAGA: {ostrzezenie}")
+        print("  >>> Sprawdź, czy nie wkleiłeś dwóch sygnatur bez separatora |")
+        print("  >>> albo sygnatury razem z fragmentem otaczającego tekstu.")
+    print()
 
     if not klucz:
         print("  Sygnatura znika po normalizacji — nie ma czego szukać.")

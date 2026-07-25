@@ -76,7 +76,32 @@ const SYGNATURY = (() => {
     return 'NIEZNANY';
   }
 
-  return { normalizuj, bezInicjalow, rodzaj };
+  // ---- wykrywanie klucza podejrzanego ----
+  // Najdłuższa realna sygnatura w danych produkcyjnych ma 33 znaki po
+  // normalizacji. Próg 40 daje zapas, a wciąż łapie sklejenia dwóch sygnatur.
+  const MAKS_ROZSADNA_DLUGOSC = 40;
+
+  /**
+   * Zwraca opis podejrzenia albo pusty łańcuch. Chroni przed cichym błędem:
+   * ekstrakcja łapie za dużo -> powstaje klucz, który z niczym się nie
+   * dopasuje, a użytkownik widzi tylko „nie ma w archiwum”.
+   */
+  function podejrzany(znormalizowana) {
+    if (!znormalizowana) return '';
+
+    const dlugi = znormalizowana.length > MAKS_ROZSADNA_DLUGOSC;
+    const nieznany = rodzaj(znormalizowana) === 'NIEZNANY';
+
+    if (dlugi && nieznany) {
+      return `klucz nietypowo długi (${znormalizowana.length} znaki) i `
+           + 'nierozpoznanego formatu — możliwe, że to dwie sygnatury '
+           + 'sklejone albo fragment zdania';
+    }
+    if (dlugi) return `klucz nietypowo długi (${znormalizowana.length} znaki)`;
+    return '';
+  }
+
+  return { normalizuj, bezInicjalow, rodzaj, podejrzany };
 })();
 
 // Eksport dla Node (test parytetu). W przeglądarce `module` nie istnieje
