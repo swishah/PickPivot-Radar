@@ -34,7 +34,12 @@ jobs:
           python-version: '3.12'
 
       - name: Zainstaluj zależności
-        run: pip install psycopg2-binary
+        # psycopg2 jest niezbędny. requests dokładamy na zapas: skrypt czyta
+        # taksonomię parsując plik i normalnie niczego nie importuje, ale gdyby
+        # stałe okazały się zbudowane wyrażeniem zamiast literałem, zejdzie
+        # do ścieżki awaryjnej przez import — a wtedy zależności streszczacza
+        # muszą być dostępne.
+        run: pip install psycopg2-binary requests
 
       - name: Zasil taksonomię
         env:
