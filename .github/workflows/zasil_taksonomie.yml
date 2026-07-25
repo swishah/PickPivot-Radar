@@ -1,0 +1,49 @@
+name: Zasil taksonomie (faza 2a)
+
+# Uruchamiany WYŁĄCZNIE ręcznie.
+#
+# Domyślnie działa w trybie PODGLĄDU — pokazuje, co zrobiłby, i nic nie zapisuje.
+# Żeby faktycznie zapisać, trzeba świadomie przestawić pole "tryb" na "zapisz".
+# Ta asymetria jest celowa: przypadkowe kliknięcie "Run workflow" nie może
+# zmienić zawartości bazy.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tryb:
+        description: 'Co zrobić'
+        required: true
+        default: 'podglad'
+        type: choice
+        options:
+          - podglad
+          - zapisz
+
+jobs:
+  taksonomia:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Pobierz repozytorium
+        uses: actions/checkout@v4
+
+      - name: Ustaw Pythona
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Zainstaluj zależności
+        run: pip install psycopg2-binary
+
+      - name: Zasil taksonomię
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          if [ "${{ github.event.inputs.tryb }}" = "zapisz" ]; then
+            echo "::warning::Tryb ZAPISU — taksonomia zostanie zmieniona w bazie."
+            python3 zasil_taksonomie.py --wykonaj
+          else
+            echo "Tryb podglądu — nic nie zostanie zapisane."
+            python3 zasil_taksonomie.py
+          fi
