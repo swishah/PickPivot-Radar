@@ -9,12 +9,29 @@ który sam dobiera dostępny darmowy model — odporny na rotację darmowej ofer
 
 Klucz API przekazuje się z zewnątrz (z st.secrets w Streamlit albo z os.environ
 w GitHub Actions) — ten moduł go nie czyta samodzielnie.
+
+TAKSONOMIA — ŹRÓDŁO PRAWDY W BAZIE
+  Listy BRANZE i PRZEDMIOTY były wcześniej zaszyte w tym pliku i utrzymywane
+  ręcznie także w pliku wiedzy GPT dla modułu 5. Wtyczka przeglądarkowa byłaby
+  trzecią kopią, w dodatku rozsianą po dyskach pracowników — i pierwsza zmiana
+  taksonomii rozjechałaby je po cichu.
+
+  Teraz źródłem prawdy są tabele taksonomia_branze i taksonomia_przedmiotow.
+  Stałe poniżej ZOSTAJĄ jako awaryjny fallback: gdy baza nie odpowie, moduł
+  działa dokładnie tak jak przed zmianą. To celowe — automat streszczający nie
+  może przestać działać dlatego, że tabela słownikowa jest chwilowo niedostępna.
+
+  Odczyt jest leniwy (przy pierwszym użyciu) i buforowany. Dzięki temu wszyscy
+  odbiorcy — automat, moduł 6, Edge Functions wtyczki — widzą tę samą listę,
+  bez zmian w kodzie wywołującym.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
+import threading
 import time
 
 import requests
@@ -41,6 +58,11 @@ MAKS_TOKENOW = 2200
 # nazewnictwo uniemożliwiłoby dopasowanie subskrypcji: raz „ciepłownictwo”,
 # raz „branża grzewcza”). Modyfikując listę pamiętaj, że subskrypcje w bazie
 # odwołują się do tych dokładnych wartości.
+#
+# UWAGA: to jest już tylko FALLBACK. Wartości obowiązujące czytane są z tabeli
+# taksonomia_branze — patrz sekcja „TAKSONOMIA Z BAZY” niżej. Zmiana tutaj nie
+# wpłynie na działanie, dopóki baza odpowiada; żeby przenieść zmianę do bazy,
+# uruchom zasil_taksonomie.py.
 BRANZE = [
     "ciepłownicza",
     "wodno-kanalizacyjna",
@@ -64,10 +86,14 @@ BRANZE = [
 
 
 # Taksonomie PRZEDMIOTU interpretacji (obszar merytoryczny) — osobna lista
-# per podatek. Model wybiera 1–3 pozycje z listy właściwej dla podatku danej
-# interpretacji. Ostatnia pozycja każdej listy to bezpiecznik "inne...".
-# UWAGA: te same listy muszą być w pliku wiedzy GPT (taksonomia_przedmiotow.txt)
-# dla modułu 5 — zmieniając tutaj, zmień też tam.
+# per podatek. Model wybiera JEDEN dominujący przedmiot z listy właściwej dla
+# podatku danej interpretacji. Ostatnia pozycja każdej listy to bezpiecznik
+# "inne...".
+#
+# UWAGA: to jest już tylko FALLBACK — obowiązuje tabela taksonomia_przedmiotow.
+# Kolejność ma znaczenie merytoryczne: walidacja zwraca PIERWSZE trafienie,
+# a model dostaje listę w prompcie w tej samej kolejności. Dlatego tabela
+# przechowuje kolumnę `kolejnosc`.
 PRZEDMIOTY = {
     "CIT": [
         "estoński CIT (ryczałt od dochodów spółek)", "podatek u źródła (WHT)",
@@ -140,11 +166,128 @@ PRZEDMIOTY = {
 }
 
 
+# ---------------------------------------------------------------------------
+# TAKSONOMIA Z BAZY
+# ---------------------------------------------------------------------------
+# Odczyt leniwy i buforowany. Buforujemy z ważnością, nie na zawsze: aplikacja
+# Streamlit potrafi żyć godzinami, a zmiana taksonomii ma się w niej pojawić
+# bez restartu.
+#
+# ZASADA NADRZĘDNA: awaria bazy NIE MOŻE zatrzymać streszczania. Każdy błąd
+# kończy się cichym powrotem do stałych powyżej i jednym ostrzeżeniem na wyjściu.
+
+_TAKSONOMIA_TTL_S = 900          # 15 minut
+_taks_lock = threading.Lock()
+_taks_bufor: dict = {"branze": None, "przedmioty": None, "wczytano": 0.0,
+                     "zrodlo": "stałe w kodzie", "ostrzezono": False}
+
+
+def _polaczenie_z_env():
+    """Buduje połączenie z bazą na podstawie zmiennych środowiskowych.
+    Zwraca None, gdy konfiguracji brak — wtedy po prostu zostają stałe."""
+    try:
+        import db_core
+    except ImportError:
+        return None
+
+    url = os.environ.get("SUPABASE_DB_URL")
+    if url:
+        return db_core.SupabaseDB({"url": url})
+
+    if all(os.environ.get(k) for k in ("SUPABASE_HOST", "SUPABASE_USER",
+                                       "SUPABASE_PASSWORD")):
+        return db_core.SupabaseDB({
+            "host": os.environ["SUPABASE_HOST"],
+            "port": os.environ.get("SUPABASE_PORT", "5432"),
+            "database": os.environ.get("SUPABASE_DB", "postgres"),
+            "user": os.environ["SUPABASE_USER"],
+            "password": os.environ["SUPABASE_PASSWORD"],
+        })
+    return None
+
+
+def _pobierz_z_bazy(db) -> tuple[list[str], dict[str, list[str]]]:
+    """Czyta AKTYWNE pozycje w zapisanej kolejności.
+
+    Pozycje wycofane (aktywna = FALSE) świadomie pomijamy: nie chcemy, żeby
+    model dalej je wybierał, ale muszą zostać w tabeli, bo powołują się na nie
+    istniejące streszczenia i subskrypcje branż."""
+    b = [r["branza"] for r in db.wykonaj(
+        "SELECT branza FROM taksonomia_branze WHERE aktywna ORDER BY kolejnosc",
+        fetch=True)]
+
+    p: dict[str, list[str]] = {}
+    for r in db.wykonaj(
+            "SELECT podatek, przedmiot FROM taksonomia_przedmiotow "
+            "WHERE aktywny ORDER BY podatek, kolejnosc", fetch=True):
+        p.setdefault(r["podatek"], []).append(r["przedmiot"])
+
+    return b, p
+
+
+def zaladuj_taksonomie(db=None, *, wymus: bool = False) -> str:
+    """
+    Wczytuje taksonomię do bufora. Zwraca opis użytego źródła.
+
+    db     — gotowe połączenie (Streamlit ma już swoje, po co otwierać drugie);
+             gdy None, moduł spróbuje zbudować je ze zmiennych środowiskowych.
+    wymus  — pomija bufor, przydatne zaraz po zmianie taksonomii.
+    """
+    with _taks_lock:
+        swiezy = (time.time() - _taks_bufor["wczytano"]) < _TAKSONOMIA_TTL_S
+        if not wymus and _taks_bufor["branze"] and swiezy:
+            return _taks_bufor["zrodlo"]
+
+        polaczenie = db or _polaczenie_z_env()
+        if polaczenie is not None:
+            try:
+                b, p = _pobierz_z_bazy(polaczenie)
+                # Pusta tabela to nie jest poprawna taksonomia — traktujemy ją
+                # jak brak danych, żeby nie wysłać modelowi pustej listy.
+                if b and p:
+                    _taks_bufor.update({"branze": b, "przedmioty": p,
+                                        "wczytano": time.time(),
+                                        "zrodlo": "baza"})
+                    return "baza"
+            except Exception as e:
+                if not _taks_bufor["ostrzezono"]:
+                    print(f"[taksonomia] Nie udało się odczytać z bazy, "
+                          f"używam stałych z kodu: {str(e).splitlines()[0][:120]}")
+                    _taks_bufor["ostrzezono"] = True
+
+        _taks_bufor.update({"branze": list(BRANZE),
+                            "przedmioty": {k: list(v) for k, v in PRZEDMIOTY.items()},
+                            "wczytano": time.time(),
+                            "zrodlo": "stałe w kodzie"})
+        return "stałe w kodzie"
+
+
+def branze() -> list[str]:
+    """Obowiązująca lista branż."""
+    if not _taks_bufor["branze"]:
+        zaladuj_taksonomie()
+    return _taks_bufor["branze"]
+
+
+def przedmioty(podatek: str) -> list[str]:
+    """Obowiązująca lista przedmiotów dla podanego podatku (pusta, gdy brak)."""
+    if not _taks_bufor["przedmioty"]:
+        zaladuj_taksonomie()
+    return _taks_bufor["przedmioty"].get((podatek or "").upper(), [])
+
+
+def zrodlo_taksonomii() -> str:
+    """Do diagnostyki: 'baza' albo 'stałe w kodzie'."""
+    if not _taks_bufor["branze"]:
+        zaladuj_taksonomie()
+    return _taks_bufor["zrodlo"]
+
+
 def _waliduj_przedmioty(surowe, podatek: str) -> list[str]:
     """Przycina do taksonomii przedmiotów WŁAŚCIWEJ dla podatku (bez wielkości
     liter); wartości spoza listy odrzuca. Zwraca JEDEN dominujący przedmiot
     (pierwszy trafiony z listy) — klasyfikacja jednowartościowa."""
-    lista = PRZEDMIOTY.get((podatek or "").upper())
+    lista = przedmioty(podatek)
     if not surowe or not lista:
         return []
     if isinstance(surowe, str):
@@ -157,7 +300,11 @@ def _waliduj_przedmioty(surowe, podatek: str) -> list[str]:
     return []
 
 
-_SYSTEM = (
+# Prompt systemowy MUSI powstawać leniwie: zawiera listę branż, a ta jest
+# czytana z bazy dopiero przy pierwszym użyciu. Zbudowany w chwili importu
+# — jak było wcześniej — zamroziłby stałe z kodu na całe życie procesu.
+def _system_bazowy() -> str:
+    return (
     "Jesteś asystentem polskiego doradcy podatkowego. Streszczasz polskie "
     "interpretacje indywidualne WIERNIE, wyłącznie na podstawie dostarczonej "
     "treści. Nie zmyślasz, nie dodajesz wiedzy spoza tekstu, nie oceniasz.\n\n"
@@ -174,19 +321,20 @@ _SYSTEM = (
     '  "branze"       — lista 1–2 branż, których dotyczy działalność '
     "wnioskodawcy opisana w interpretacji. Oceniaj PO TREŚCI (czym zajmuje "
     "się wnioskodawca), nie po słowach kluczowych. Wybieraj WYŁĄCZNIE z tej "
-    "listy (dokładna pisownia): " + "; ".join(BRANZE) + ". Jeżeli żadna nie "
+    "listy (dokładna pisownia): " + "; ".join(branze()) + ". Jeżeli żadna nie "
     'pasuje wyraźnie, użyj "inna".'
-)
+    )
 
 
 
 def _system_dla(podatek: str) -> str:
     """Bazowa instrukcja + (gdy znamy podatek) wymóg klasyfikacji przedmiotowej
     z listą właściwą dla tego podatku."""
-    lista = PRZEDMIOTY.get((podatek or "").upper())
+    baza = _system_bazowy()
+    lista = przedmioty(podatek)
     if not lista:
-        return _SYSTEM
-    return _SYSTEM + (
+        return baza
+    return baza + (
         '\nDodatkowo zwróć klucz "przedmiot" — DOKŁADNIE JEDEN, dominujący '
         "obszar merytoryczny, którego NAJBARDZIEJ dotyczy interpretacja "
         "(główny problem podatkowy). Wybierz WYŁĄCZNIE jedną pozycję z tej "
@@ -221,7 +369,7 @@ def _waliduj_branze(surowe) -> list[str]:
         return []
     if isinstance(surowe, str):
         surowe = re.split(r"[,;]", surowe)
-    mapa = {b.lower(): b for b in BRANZE}
+    mapa = {b.lower(): b for b in branze()}
     wynik = []
     for s in surowe:
         b = mapa.get(str(s).strip().strip('"').lower())
