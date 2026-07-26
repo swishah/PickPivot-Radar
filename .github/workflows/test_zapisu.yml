@@ -1,0 +1,52 @@
+name: Test funkcji zapisujacej
+
+# Uruchamiany ręcznie.
+#
+# Tryb "odrzucenia" (domyślny) NICZEGO NIE ZAPISUJE — wysyła wyłącznie żądania,
+# które funkcja ma odrzucić. Bezpieczny, można powtarzać.
+#
+# Tryb "zapis" dokłada jeden prawdziwy wpis do streszczenia_auto. Wpis zostanie
+# wyłapany przez monitoring branż (czyli mogą pójść maile), a skrypt usuwa go
+# na końcu. Używaj świadomie.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tryb:
+        description: 'Zakres testu'
+        required: true
+        default: 'odrzucenia'
+        type: choice
+        options:
+          - odrzucenia
+          - zapis
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Pobierz repozytorium
+        uses: actions/checkout@v4
+
+      - name: Ustaw Pythona
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Zainstaluj zależności
+        run: pip install psycopg2-binary
+
+      - name: Test funkcji
+        env:
+          WTYCZKA_URL: ${{ secrets.WTYCZKA_URL }}
+          WTYCZKA_SECRET: ${{ secrets.WTYCZKA_SECRET }}
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          if [ "${{ github.event.inputs.tryb }}" = "zapis" ]; then
+            echo "::warning::Tryb ZAPISU — wpis trafi do bazy i może uruchomić monitoring."
+            python3 test_zapisu.py --zapisz
+          else
+            python3 test_zapisu.py
+          fi
