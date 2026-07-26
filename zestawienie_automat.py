@@ -17,6 +17,21 @@ i nie są liczone ponownie (oszczędza darmowy limit).
 WYMAGA: sekcji [openrouter] w Streamlit Secrets z kluczem api_key
 oraz kolumny dokumenty.pobrano_at (migracja_pobrano_at.sql).
 Renderer i logika tygodni pn–nd są współdzielone z modułem 5.
+
+STRESZCZENIA Z WTYCZKI PRZEGLĄDARKOWEJ
+  Wtyczka Skaner Doradca zapisuje streszczenia do TEJ SAMEJ tabeli i pod TYM
+  SAMYM modelem co automat (kolumna `zrodlo` mówi, kto je zrobił). Dzięki temu
+  pojawiają się tutaj bez żadnych zmian w zapytaniach, a automat ich nie
+  powtarza.
+
+  Różnica jest jedna: wtyczka zapisuje dodatkowo PEŁNY układ z sekcjami
+  (kolumna `streszczenie_pelne`), którego automat nie generuje — jego prompt
+  prosi wyłącznie o zwięzłą prozę. Pozycje z pełną wersją są oznaczone rombem
+  i można je rozwinąć pod tabelą.
+
+  UWAGA na listę rozwijaną modelu: filtruje ona wiersze po kolumnie `model`.
+  Wybranie modelu innego niż kanoniczny ukryje streszczenia z wtyczki —
+  moduł ostrzega o tym wprost.
 ===============================================================================
 """
 
@@ -42,6 +57,12 @@ PRZERWA_S = 3.5  # odstęp między zapytaniami (limit ~20/min darmowej puli)
 # potem wszystko na bieżąco. Format YYYY-MM-DD; porównanie łańcuchowe jest
 # poprawne, bo data_wyd jest przechowywana jako tekst ISO.
 DATA_START = "2026-07-15"
+
+# Model, pod którym zapisuje zarówno automat, jak i wtyczka przeglądarkowa.
+# Musi się zgadzać ze zmienną MODEL_ZESTAWIENIA funkcji wtyczka-zapisz
+# w Supabase — przy rozjeździe powstałyby dwa wiersze na dokument i moduł
+# pokazywałby tylko jeden z nich.
+MODEL_KANONICZNY = getattr(sopen, "MODEL_DOMYSLNY", "openrouter/free")
 
 
 # ---------------------------------------------------------------------------
@@ -78,6 +99,16 @@ def _zapewnij_tabele() -> bool:
     )
     _wykonaj(
         "ALTER TABLE streszczenia_auto ADD COLUMN IF NOT EXISTS przedmiot TEXT DEFAULT ''"
+    )
+    # Pełny układ z sekcjami — zapisuje go wyłącznie wtyczka przeglądarkowa.
+    # Automat zostawia tu pustkę, bo jego prompt prosi tylko o zwięzłą prozę.
+    _wykonaj(
+        "ALTER TABLE streszczenia_auto ADD COLUMN IF NOT EXISTS "
+        "streszczenie_pelne TEXT DEFAULT ''"
+    )
+    # Kto utworzył wpis: 'automat' albo 'wtyczka:<profil>'.
+    _wykonaj(
+        "ALTER TABLE streszczenia_auto ADD COLUMN IF NOT EXISTS zrodlo TEXT DEFAULT ''"
     )
     return True
 
@@ -137,29 +168,60 @@ SORT_KOLUMNY = {
 }
 
 
-def _policz(podatek: str) -> int:
+def _policz(podatek: str, model: str = "", tylko_pelne: bool = False) -> int:
+    """Liczba pozycji do stronicowania. Przy włączonym filtrze liczymy tylko
+    te z pełnym streszczeniem — inaczej paginacja pokazywałaby strony,
+    na których po odfiltrowaniu nic nie zostaje."""
+    if not tylko_pelne:
+        r = _zapytaj_cache(
+            "SELECT COUNT(*) AS n FROM dokumenty WHERE podatek=%s AND data_wyd >= %s",
+            (podatek, DATA_START))
+        return int(r[0]["n"]) if r else 0
+
     r = _zapytaj_cache(
-        "SELECT COUNT(*) AS n FROM dokumenty WHERE podatek=%s AND data_wyd >= %s",
-        (podatek, DATA_START))
+        """SELECT COUNT(*) AS n
+           FROM dokumenty d
+           JOIN streszczenia_auto s
+             ON s.dokument_id = d.id AND s.model = %s
+           WHERE d.podatek = %s AND d.data_wyd >= %s
+             AND COALESCE(s.streszczenie_pelne, '') <> ''""",
+        (model, podatek, DATA_START))
     return int(r[0]["n"]) if r else 0
 
 
+# Znacznik przy pozycjach, które mają pełne streszczenie. Doklejamy go do
+# tematu, bo renderer tabeli (_tabela_html) jest WSPÓŁDZIELONY z modułem 5
+# i dołożenie tam kolumny zmieniłoby wygląd także tamtego zestawienia.
+ZNACZNIK_PELNEGO = "◆ "
+
+
 def _wiersze(podatek: str, model: str, sort_kol: str, malejaco: bool,
-             offset: int = 0, limit: int = 50) -> list[dict]:
+             offset: int = 0, limit: int = 50,
+             tylko_pelne: bool = False) -> list[dict]:
     """Strona wierszy do wyświetlenia (bez pełnych tekstów), z sortowaniem.
     Data publikacji = pobrano_at (data dogrania do bazy). Cache'owane."""
     kol = SORT_KOLUMNY.get(sort_kol, "d.data_wyd")
     kier = "DESC" if malejaco else "ASC"
+
+    # Filtr wymusza złączenie wewnętrzne — interesują nas wyłącznie dokumenty
+    # ze streszczeniem, więc LEFT JOIN nic by tu nie wniósł.
+    zlaczenie = "JOIN" if tylko_pelne else "LEFT JOIN"
+    warunek_pelne = ("AND COALESCE(s.streszczenie_pelne, '') <> ''"
+                     if tylko_pelne else "")
+
     rows = _zapytaj_cache(
         f"""
         SELECT d.id, d.sygnatura, d.data_wyd, d.pobrano_at,
                s.temat AS s_temat, s.streszczenie AS s_streszcz,
                COALESCE(s.branze, '') AS s_branze,
-               COALESCE(s.przedmiot, '') AS s_przedmiot
+               COALESCE(s.przedmiot, '') AS s_przedmiot,
+               COALESCE(s.streszczenie_pelne, '') AS s_pelne,
+               COALESCE(s.zrodlo, '') AS s_zrodlo
         FROM dokumenty d
-        LEFT JOIN streszczenia_auto s
+        {zlaczenie} streszczenia_auto s
                ON s.dokument_id = d.id AND s.model = %s
         WHERE d.podatek = %s AND d.data_wyd >= %s
+          {warunek_pelne}
         ORDER BY {kol} {kier} NULLS LAST, d.sygnatura
         LIMIT {int(limit)} OFFSET {int(offset)}
         """,
@@ -168,7 +230,14 @@ def _wiersze(podatek: str, model: str, sort_kol: str, malejaco: bool,
     rows = [dict(r) for r in rows]  # kopia — nie modyfikujemy obiektu w cache
     for r in rows:
         r["_ma"] = _sensowne(r.get("s_streszcz"))
-        r["temat"] = (r.get("s_temat") or "") if r["_ma"] else ""
+        r["pelne"] = (r.get("s_pelne") or "").strip()
+        r["zrodlo"] = (r.get("s_zrodlo") or "").strip()
+        r["_ma_pelne"] = bool(r["pelne"])
+
+        temat = (r.get("s_temat") or "") if r["_ma"] else ""
+        # Romb sygnalizuje, że pod tabelą jest co rozwinąć.
+        r["temat"] = (ZNACZNIK_PELNEGO + temat) if r["_ma_pelne"] and temat else temat
+
         r["branza"] = (r.get("s_branze") or "") if r["_ma"] else ""
         r["przedmiot"] = (r.get("s_przedmiot") or "") if r["_ma"] else ""
         r["streszczenie"] = r.get("s_streszcz") if r["_ma"] else "— (brak streszczenia)"
@@ -221,6 +290,55 @@ def _zapisz_streszczenie(dok_id: str, podatek: str, model: str,
 
 
 # ---------------------------------------------------------------------------
+# PEŁNE STRESZCZENIA
+# ---------------------------------------------------------------------------
+def _zrodlo_opisowo(zrodlo: str) -> str:
+    z = (zrodlo or "").strip()
+    if z.startswith("wtyczka"):
+        profil = z.split(":", 1)[1] if ":" in z else ""
+        return f"wtyczka ({profil})" if profil else "wtyczka"
+    return "automat"
+
+
+def _pelne_streszczenia(rekordy: list[dict]) -> None:
+    """
+    Rozwijane pełne streszczenia pod tabelą.
+
+    DLACZEGO POD TABELĄ, A NIE W NIEJ
+      Renderer _tabela_html jest współdzielony z modułem 5. Dołożenie tam
+      kolumny albo rozwijania zmieniłoby wygląd także tamtego zestawienia,
+      a ono ma pozostać nietknięte. Stąd znacznik w tabeli i treść poniżej.
+
+    Rozwijane pokazujemy WYŁĄCZNIE dla pozycji, które faktycznie mają pełną
+    wersję. Puste rozwijane przy każdym wierszu byłyby szumem — po włączeniu
+    automatu większość wpisów pełnej wersji mieć nie będzie, bo jego prompt
+    prosi tylko o zwięzłą prozę.
+    """
+    z_pelnym = [r for r in rekordy if r.get("_ma_pelne")]
+    if not z_pelnym:
+        return
+
+    st.markdown("---")
+    st.markdown(f"#### Pełne streszczenia ({len(z_pelnym)})")
+    st.caption(
+        "Powstają przy ręcznym streszczaniu z wtyczki przeglądarkowej. "
+        "Automat generuje wyłącznie wersję zwięzłą, widoczną w tabeli powyżej."
+    )
+
+    for r in z_pelnym:
+        temat = (r.get("temat") or "").replace(ZNACZNIK_PELNEGO, "").strip()
+        naglowek = f"{r['sygnatura']} — {temat}" if temat else str(r["sygnatura"])
+        with st.expander(naglowek):
+            st.caption(
+                f"Data wydania: {r.get('data_wyd') or '—'} · "
+                f"Źródło: {_zrodlo_opisowo(r.get('zrodlo'))}"
+            )
+            # Treść jest markdownem z nagłówkami sekcji w gwiazdkach —
+            # Streamlit wyrenderuje je pogrubieniem bez naszego udziału.
+            st.markdown(r["pelne"])
+
+
+# ---------------------------------------------------------------------------
 # KLUCZ API
 # ---------------------------------------------------------------------------
 def _api_key() -> str | None:
@@ -240,10 +358,21 @@ def _zakladka(podatek: str, model: str, klucz_api: str | None) -> None:
     sort_kol, malejaco = _pasek_sortowania(
         f"auto_{podatek}", list(SORT_KOLUMNY.keys()), "Data wydania")
 
-    total = _policz(podatek)
+    tylko_pelne = st.checkbox(
+        "Pokaż tylko pozycje z pełnym streszczeniem",
+        key=f"auto_filtr_{podatek}",
+        help="Pełne streszczenia powstają przy ręcznym streszczaniu z wtyczki. "
+             "Filtr pokazuje więc sprawy, którym ktoś się faktycznie przyjrzał.",
+    )
+
+    total = _policz(podatek, model, tylko_pelne)
     if total == 0:
-        st.info("Brak interpretacji w bazie dla tego podatku "
-                f"(od {DATA_START}).")
+        if tylko_pelne:
+            st.info("Żadna pozycja nie ma jeszcze pełnego streszczenia. "
+                    "Powstają one przy streszczaniu z wtyczki przeglądarkowej.")
+        else:
+            st.info("Brak interpretacji w bazie dla tego podatku "
+                    f"(od {DATA_START}).")
         return
 
     brak = _brakujace(podatek, model)
@@ -273,8 +402,16 @@ def _zakladka(podatek: str, model: str, klucz_api: str | None) -> None:
                 st.rerun()
 
     offset = _pasek_stron(f"auto_{podatek}", total, LIMIT_WIERSZY)
-    rekordy = _wiersze(podatek, model, sort_kol, malejaco, offset, LIMIT_WIERSZY)
+    rekordy = _wiersze(podatek, model, sort_kol, malejaco, offset,
+                       LIMIT_WIERSZY, tylko_pelne)
     st.markdown(_tabela_html(rekordy), unsafe_allow_html=True)
+
+    if any(r.get("_ma_pelne") for r in rekordy):
+        st.caption(f"Znacznik **{ZNACZNIK_PELNEGO.strip()}** przy temacie oznacza, "
+                   "że pozycja ma pełne streszczenie — do rozwinięcia pod tabelą.")
+
+    _pelne_streszczenia(rekordy)
+
     st.caption(
         f"„Data publikacji” = data dogrania do bazy (pobrania). Sortuj po niej, "
         f"aby nic nie umknęło przy publikacjach opóźnionych. Streszczenia "
@@ -343,6 +480,18 @@ def pokaz_zestawienie_automat() -> None:
             "Domyślnie `openrouter/free` (auto-router darmowych modeli — odporny "
             "na rotację oferty). Limit darmowy: ~20 zapytań/min, 50/dobę "
             "(≥10 kredytów podnosi do ~1000/dobę)."
+        )
+
+    # Lista rozwijana filtruje wiersze po kolumnie `model`. Wybranie modelu
+    # innego niż kanoniczny ukrywa wszystko, co zapisała wtyczka — a to
+    # wygląda jak zniknięcie danych, nie jak zmiana filtra.
+    if model != MODEL_KANONICZNY:
+        st.warning(
+            f"Wybrany model `{model}` różni się od kanonicznego "
+            f"`{MODEL_KANONICZNY}`. Streszczenia zapisane przez wtyczkę "
+            "przeglądarkową są przypisane do modelu kanonicznego, więc "
+            "**nie będą tu widoczne**, dopóki nie wrócisz na niego w liście "
+            "powyżej."
         )
 
     for zakladka_ui, podatek in zip(st.tabs(PODATKI), PODATKI):
