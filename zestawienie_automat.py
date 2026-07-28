@@ -43,6 +43,7 @@ import time
 import streamlit as st
 
 import archiwum_supabase
+import pdf_zestawienie
 import streszczacz_openrouter as sopen
 from zestawienie_tygodniowe import (_pasek_sortowania, _pasek_stron,
                                     _tabela_html, _zapytaj_cache)
@@ -339,6 +340,128 @@ def _pelne_streszczenia(rekordy: list[dict]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# ZESTAWIENIE TYGODNIOWE PDF
+# ---------------------------------------------------------------------------
+def _rekordy_tygodnia(pon: dt.date, model: str) -> list[dict]:
+    """
+    Interpretacje, które POJAWIŁY SIĘ W BAZIE w danym tygodniu.
+
+    Warunek stoi na pobrano_at, nie na data_wyd — i to jest cała istota tego
+    zestawienia. MF publikuje z opóźnieniem, więc wybór po dacie wydania
+    zostawiałby dziurę: interpretacja z 20 lipca dograna 5 sierpnia nie trafiłaby
+    do żadnego raportu. Raport za tydzień jej wydania powstał, zanim się
+    pojawiła, a późniejsze już jej nie obejmują.
+
+    Po dacie publikacji każda trafia do dokładnie jednego zestawienia.
+    """
+    od, do = pdf_zestawienie.granice_tygodnia(pon)
+    return _zapytaj_cache(
+        """
+        SELECT d.sygnatura, d.podatek, d.data_wyd, d.pobrano_at, d.link,
+               COALESCE(s.temat, '')              AS temat,
+               COALESCE(s.streszczenie, '')       AS streszczenie,
+               COALESCE(s.streszczenie_pelne, '') AS streszczenie_pelne,
+               COALESCE(s.zrodlo, '')             AS zrodlo
+        FROM dokumenty d
+        LEFT JOIN streszczenia_auto s
+               ON s.dokument_id = d.id AND s.model = %s
+        WHERE d.pobrano_at >= %s AND d.pobrano_at <= %s
+        ORDER BY d.podatek, d.data_wyd DESC, d.sygnatura
+        """,
+        (model, od, do),
+    )
+
+
+def _tygodnie_do_wyboru(ile: int = 12) -> list[dt.date]:
+    """Poniedziałki ostatnich tygodni, od najnowszego. Bieżący pomijamy —
+    jeszcze się nie skończył, więc zestawienie byłoby niepełne."""
+    biezacy = pdf_zestawienie.poniedzialek(dt.date.today())
+    return [biezacy - dt.timedelta(weeks=i) for i in range(1, ile + 1)]
+
+
+def _sekcja_pdf(model: str) -> None:
+    st.subheader("Zestawienie tygodniowe w PDF")
+    st.caption(
+        "Obejmuje interpretacje, które POJAWIŁY SIĘ W BAZIE w wybranym tygodniu — "
+        "niezależnie od daty wydania. Dzięki temu żadna nie umyka przy publikacji "
+        "z opóźnieniem: każda trafia do dokładnie jednego zestawienia."
+    )
+
+    tygodnie = _tygodnie_do_wyboru()
+    etykiety = {pdf_zestawienie.opis_tygodnia(p): p for p in tygodnie}
+
+    c1, c2 = st.columns([3, 2])
+    with c1:
+        wybrana = st.selectbox("Tydzień", options=list(etykiety.keys()),
+                               index=0, key="pdf_tydzien")
+    pon = etykiety[wybrana]
+
+    with c2:
+        z_pelnymi = st.checkbox(
+            "Dołącz rozbudowane streszczenia", key="pdf_pelne",
+            help="Znacznie grubszy dokument. Pełne streszczenia mają tylko "
+                 "pozycje przetworzone z wtyczki albo z GPT.")
+
+    rekordy = _rekordy_tygodnia(pon, model)
+
+    if not rekordy:
+        st.info("W tym tygodniu nie pojawiła się w bazie żadna interpretacja.")
+        return
+
+    bez_streszczenia = sum(1 for r in rekordy if not _sensowne(r.get("streszczenie")))
+    opoznione = sum(1 for r in rekordy
+                    if str(r.get("data_wyd") or "")[:10] < pon.isoformat())
+
+    k1, k2, k3 = st.columns(3)
+    k1.metric("Interpretacji", len(rekordy))
+    k2.metric("Bez streszczenia", bez_streszczenia)
+    # Ta liczba pokazuje, ile pozycji zostałoby POMINIĘTYCH, gdyby zestawienie
+    # wybierało po dacie wydania. Warto ją widzieć — uzasadnia cały mechanizm.
+    k3.metric("Wydanych wcześniej", opoznione)
+
+    if bez_streszczenia:
+        st.warning(
+            f"{bez_streszczenia} pozycji nie ma jeszcze streszczenia — w PDF "
+            "znajdą się z adnotacją. Możesz je najpierw uzupełnić przyciskiem "
+            "„Streść brakujące” w zakładkach powyżej."
+        )
+
+    if st.button("Wygeneruj PDF", type="primary", key="pdf_generuj"):
+        _archiwum_font_ostrzezenie()
+        try:
+            dane = pdf_zestawienie.generuj([dict(r) for r in rekordy], pon,
+                                           z_pelnymi=z_pelnymi)
+        except Exception as e:
+            st.error(f"Nie udało się wygenerować PDF: {e}")
+            return
+
+        st.download_button(
+            "Pobierz zestawienie",
+            data=dane,
+            file_name=f"zestawienie_{pon.isoformat()}.pdf",
+            mime="application/pdf",
+            key="pdf_pobierz",
+        )
+        st.success(f"Gotowe — {len(rekordy)} pozycji, {len(dane) // 1024} kB.")
+
+
+def _archiwum_font_ostrzezenie() -> None:
+    """Brak fontu z polskimi znakami psuje PDF po cichu — font spada na
+    Helvetica, która nie ma ą/ć/ę. Lepiej powiedzieć o tym przed pobraniem."""
+    try:
+        import eksplorator_archiwum as ea
+        ea._zarejestruj_fonty()
+        if not ea._font_polski_ok:
+            st.warning(
+                "Nie znaleziono fontu z polskimi znakami — w PDF mogą zniknąć "
+                "ą, ć, ę, ł, ń, ó, ś, ź, ż. Dodaj folder `fonts/` z plikami "
+                "DejaVuSans.ttf i DejaVuSans-Bold.ttf do repozytorium.",
+                icon="⚠️")
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
 # KLUCZ API
 # ---------------------------------------------------------------------------
 def _api_key() -> str | None:
@@ -497,6 +620,9 @@ def pokaz_zestawienie_automat() -> None:
     for zakladka_ui, podatek in zip(st.tabs(PODATKI), PODATKI):
         with zakladka_ui:
             _zakladka(podatek, model, klucz_api)
+
+    st.markdown("---")
+    _sekcja_pdf(model)
 
 
 if __name__ == "__main__":
