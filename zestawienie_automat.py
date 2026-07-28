@@ -342,7 +342,7 @@ def _pelne_streszczenia(rekordy: list[dict]) -> None:
 # ---------------------------------------------------------------------------
 # ZESTAWIENIE TYGODNIOWE PDF
 # ---------------------------------------------------------------------------
-def _rekordy_tygodnia(pon: dt.date, model: str) -> list[dict]:
+def _rekordy_tygodnia(pon: dt.date, model: str, podatek: str) -> list[dict]:
     """
     Interpretacje, które POJAWIŁY SIĘ W BAZIE w danym tygodniu.
 
@@ -365,10 +365,10 @@ def _rekordy_tygodnia(pon: dt.date, model: str) -> list[dict]:
         FROM dokumenty d
         LEFT JOIN streszczenia_auto s
                ON s.dokument_id = d.id AND s.model = %s
-        WHERE d.pobrano_at >= %s AND d.pobrano_at <= %s
-        ORDER BY d.podatek, d.data_wyd DESC, d.sygnatura
+        WHERE d.podatek = %s AND d.pobrano_at >= %s AND d.pobrano_at <= %s
+        ORDER BY d.data_wyd DESC, d.sygnatura
         """,
-        (model, od, do),
+        (model, podatek, od, do),
     )
 
 
@@ -379,70 +379,76 @@ def _tygodnie_do_wyboru(ile: int = 12) -> list[dt.date]:
     return [biezacy - dt.timedelta(weeks=i) for i in range(1, ile + 1)]
 
 
-def _sekcja_pdf(model: str) -> None:
-    st.subheader("Zestawienie tygodniowe w PDF")
-    st.caption(
-        "Obejmuje interpretacje, które POJAWIŁY SIĘ W BAZIE w wybranym tygodniu — "
-        "niezależnie od daty wydania. Dzięki temu żadna nie umyka przy publikacji "
-        "z opóźnieniem: każda trafia do dokładnie jednego zestawienia."
-    )
+def _pasek_pdf(podatek: str, model: str) -> None:
+    """
+    Przycisk generowania zestawienia tygodniowego — NAD tabelą, w obrębie
+    zakładki danego podatku.
 
+    Świadomie osobno dla każdego podatku, a nie jedną sekcją na dole strony:
+    tak wygląda praca z tym modułem. Patrzysz na PIT — chcesz zestawienie PIT,
+    bez przewijania na dół i wybierania podatku po raz drugi.
+
+    Wybór tygodnia jest tuż nad przyciskiem, bo domyślny (ostatni zakończony)
+    pasuje w większości przypadków, ale nadrabianie zaległości wymaga sięgnięcia
+    wstecz.
+    """
     tygodnie = _tygodnie_do_wyboru()
     etykiety = {pdf_zestawienie.opis_tygodnia(p): p for p in tygodnie}
 
-    c1, c2 = st.columns([3, 2])
-    with c1:
-        wybrana = st.selectbox("Tydzień", options=list(etykiety.keys()),
-                               index=0, key="pdf_tydzien")
-    pon = etykiety[wybrana]
+    _, srodek, _ = st.columns([1, 2, 1])
+    with srodek:
+        wybrana = st.selectbox(
+            "Tydzień zestawienia", options=list(etykiety.keys()), index=0,
+            key=f"pdf_tydzien_{podatek}", label_visibility="collapsed",
+            help="Domyślnie ostatni zakończony tydzień. Bieżący pominięty — "
+                 "jeszcze trwa, więc zestawienie byłoby niepełne.")
+        pon = etykiety[wybrana]
 
-    with c2:
-        z_pelnymi = st.checkbox(
-            "Dołącz rozbudowane streszczenia", key="pdf_pelne",
-            help="Znacznie grubszy dokument. Pełne streszczenia mają tylko "
-                 "pozycje przetworzone z wtyczki albo z GPT.")
+        rekordy = _rekordy_tygodnia(pon, model, podatek)
+        klucz_pliku = f"pdf_dane_{podatek}_{pon.isoformat()}"
 
-    rekordy = _rekordy_tygodnia(pon, model)
+        if not rekordy:
+            st.button(f"Brak interpretacji {podatek} w tym tygodniu",
+                      disabled=True, use_container_width=True,
+                      key=f"pdf_pusty_{podatek}")
+        elif st.session_state.get(klucz_pliku):
+            # Po wygenerowaniu pokazujemy pobieranie zamiast przycisku —
+            # inaczej łatwo kliknąć drugi raz i czekać na to samo.
+            st.download_button(
+                f"Pobierz zestawienie {podatek} ({len(rekordy)})",
+                data=st.session_state[klucz_pliku],
+                file_name=f"zestawienie_{podatek}_{pon.isoformat()}.pdf",
+                mime="application/pdf",
+                use_container_width=True, type="primary",
+                key=f"pdf_pobierz_{podatek}",
+            )
+        else:
+            etykieta = f"Zestawienie PDF — {podatek}, {len(rekordy)} poz."
+            if st.button(etykieta, use_container_width=True,
+                         key=f"pdf_generuj_{podatek}"):
+                _archiwum_font_ostrzezenie()
+                try:
+                    st.session_state[klucz_pliku] = pdf_zestawienie.generuj(
+                        [dict(r) for r in rekordy], pon, podatek=podatek)
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Nie udało się wygenerować PDF: {e}")
 
-    if not rekordy:
-        st.info("W tym tygodniu nie pojawiła się w bazie żadna interpretacja.")
-        return
-
-    bez_streszczenia = sum(1 for r in rekordy if not _sensowne(r.get("streszczenie")))
-    opoznione = sum(1 for r in rekordy
-                    if str(r.get("data_wyd") or "")[:10] < pon.isoformat())
-
-    k1, k2, k3 = st.columns(3)
-    k1.metric("Interpretacji", len(rekordy))
-    k2.metric("Bez streszczenia", bez_streszczenia)
-    # Ta liczba pokazuje, ile pozycji zostałoby POMINIĘTYCH, gdyby zestawienie
-    # wybierało po dacie wydania. Warto ją widzieć — uzasadnia cały mechanizm.
-    k3.metric("Wydanych wcześniej", opoznione)
-
-    if bez_streszczenia:
-        st.warning(
-            f"{bez_streszczenia} pozycji nie ma jeszcze streszczenia — w PDF "
-            "znajdą się z adnotacją. Możesz je najpierw uzupełnić przyciskiem "
-            "„Streść brakujące” w zakładkach powyżej."
-        )
-
-    if st.button("Wygeneruj PDF", type="primary", key="pdf_generuj"):
-        _archiwum_font_ostrzezenie()
-        try:
-            dane = pdf_zestawienie.generuj([dict(r) for r in rekordy], pon,
-                                           z_pelnymi=z_pelnymi)
-        except Exception as e:
-            st.error(f"Nie udało się wygenerować PDF: {e}")
-            return
-
-        st.download_button(
-            "Pobierz zestawienie",
-            data=dane,
-            file_name=f"zestawienie_{pon.isoformat()}.pdf",
-            mime="application/pdf",
-            key="pdf_pobierz",
-        )
-        st.success(f"Gotowe — {len(rekordy)} pozycji, {len(dane) // 1024} kB.")
+        # Podpis pod przyciskiem — dwie liczby, które realnie coś znaczą.
+        if rekordy:
+            bez = sum(1 for r in rekordy if not _sensowne(r.get("streszczenie")))
+            # Ile pozycji PRZEPADŁOBY, gdyby zestawienie wybierało po dacie
+            # wydania zamiast po dacie publikacji. To miara tego, ile ratuje
+            # ten mechanizm — warto ją widzieć.
+            wczesniejsze = sum(1 for r in rekordy
+                               if str(r.get("data_wyd") or "")[:10] < pon.isoformat())
+            uwagi = []
+            if bez:
+                uwagi.append(f"{bez} bez streszczenia")
+            if wczesniejsze:
+                uwagi.append(f"{wczesniejsze} wydanych wcześniej")
+            st.caption(" · ".join(uwagi) if uwagi
+                       else "Wszystkie pozycje ze streszczeniem.")
 
 
 def _archiwum_font_ostrzezenie() -> None:
@@ -523,6 +529,9 @@ def _zakladka(podatek: str, model: str, klucz_api: str | None) -> None:
                 _streszczaj(wsad, podatek, model, klucz_api)
                 st.cache_data.clear()  # świeże streszczenia mają być widoczne
                 st.rerun()
+
+    _pasek_pdf(podatek, model)
+    st.markdown("")
 
     offset = _pasek_stron(f"auto_{podatek}", total, LIMIT_WIERSZY)
     rekordy = _wiersze(podatek, model, sort_kol, malejaco, offset,
@@ -620,9 +629,6 @@ def pokaz_zestawienie_automat() -> None:
     for zakladka_ui, podatek in zip(st.tabs(PODATKI), PODATKI):
         with zakladka_ui:
             _zakladka(podatek, model, klucz_api)
-
-    st.markdown("---")
-    _sekcja_pdf(model)
 
 
 if __name__ == "__main__":

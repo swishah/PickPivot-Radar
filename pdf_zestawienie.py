@@ -141,13 +141,15 @@ def _na_akapity(tekst: str) -> list[str]:
 # GENEROWANIE
 # ---------------------------------------------------------------------------
 def generuj(rekordy: list[dict], pon: dt.date, *,
-            z_pelnymi: bool = False) -> bytes:
+            z_pelnymi: bool = False, podatek: str = "") -> bytes:
     """
     Buduje PDF zestawienia tygodniowego.
 
     rekordy: słowniki z kluczami sygnatura, podatek, data_wyd, pobrano_at,
              temat, streszczenie, streszczenie_pelne, zrodlo, link
     z_pelnymi: czy dołączyć pełne streszczenia (znacznie grubszy dokument)
+    podatek: gdy podany, tytuł mówi wprost o jednym podatku i pomijamy
+             nagłówki sekcji — przy jednorodnej liście byłyby zbędne
     """
     regularny, pogrubiony, _ = _fonty()
     p = paleta.paleta_pdf()
@@ -193,7 +195,9 @@ def generuj(rekordy: list[dict], pon: dt.date, *,
     e = []
     e.append(Paragraph(f"{paleta.NAZWA_MARKI} — zestawienie tygodniowe", s_marka))
     e.append(HRFlowable(width="100%", thickness=1.1, color=akcent, spaceAfter=10))
-    e.append(Paragraph(f"Interpretacje z tygodnia {opis_tygodnia(pon)}", s_tytul))
+    tytul = (f"{podatek} — interpretacje z tygodnia {opis_tygodnia(pon)}"
+             if podatek else f"Interpretacje z tygodnia {opis_tygodnia(pon)}")
+    e.append(Paragraph(tytul, s_tytul))
 
     # Liczby w podtytule mówią wprost, czego dotyczy zestawienie — bez tego
     # czytelnik nie wie, czy zero pozycji dla podatku znaczy „nic nie było",
@@ -207,17 +211,23 @@ def generuj(rekordy: list[dict], pon: dt.date, *,
 
     if not rekordy:
         e.append(Paragraph(
-            "W tym tygodniu nie pojawiła się w bazie żadna interpretacja.",
-            s_brak))
+            f"W tym tygodniu nie pojawiła się w bazie żadna interpretacja"
+            f"{' ' + podatek if podatek else ''}.", s_brak))
     else:
-        for podatek in PODATKI:
-            grupa = [r for r in rekordy if (r.get("podatek") or "") == podatek]
+        # Przy zestawieniu jednego podatku nagłówki sekcji są zbędne —
+        # wszystkie pozycje należą do tej samej grupy, a tytuł już o tym mówi.
+        grupy = ([(podatek, rekordy)] if podatek else
+                 [(p, [r for r in rekordy if (r.get("podatek") or "") == p])
+                  for p in PODATKI])
+
+        for nazwa_grupy, grupa in grupy:
             if not grupa:
                 continue
 
-            e.append(Paragraph(f"{podatek} — {len(grupa)}", s_podatek))
-            e.append(HRFlowable(width="100%", thickness=0.7, color=linia_jasna,
-                                spaceAfter=6))
+            if not podatek:
+                e.append(Paragraph(f"{nazwa_grupy} — {len(grupa)}", s_podatek))
+                e.append(HRFlowable(width="100%", thickness=0.7,
+                                    color=linia_jasna, spaceAfter=6))
 
             for r in grupa:
                 e.append(Paragraph(str(r.get("sygnatura") or "—"), s_sygnatura))
