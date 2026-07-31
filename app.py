@@ -3,12 +3,18 @@ import time
 
 import paleta
 
-# Zaladowanie wszystkich Twoich odseparowanych plikow
-import cfo_analyzer
-import raporty
-import eksplorator_archiwum
+# Zaladowanie wszystkich Twoich odseparowanych plikow.
+#
+# WYCOFANE Z MENU (pliki zostaja w repo, tylko nie sa importowane ani
+# routowane): raporty.py (Sciagacz), eksplorator_archiwum.py (Archiwum),
+# cfo_analyzer.py (Analiza Wskaznikowa), zestawienie_tygodniowe.py
+# (Zestawienie Tygodniowe DOCX). Powod: to byly jedyne miejsca w UI ciagnace
+# pelne teksty interpretacji — jedno klikniecie "Szukaj" w Archiwum potrafilo
+# pobrac kilkadziesiat MB. Biezaca praca odbywa sie w GitHub Actions.
+#
+# UWAGA: zestawienie_tygodniowe.py NIE jest martwym kodem — zestawienie_automat
+# importuje z niego renderer tabeli i paski sortowania/stron. Nie kasowac.
 import eksplorator_wyrokow
-import zestawienie_tygodniowe
 import zestawienie_automat
 import monitoring_ui
 import ustawienia_systemu
@@ -168,19 +174,22 @@ with st.sidebar:
 _ROLA = "admin" if (st.session_state.get("superadmin")
                      or st.session_state.get("rola") == "admin") else "user"
 
+# Numeracja przenumerowana po wycofaniu czterech modulow. Klucze musza sie
+# zgadzac z auth.UPRAWNIENIA — mapa jest kluczowana TYM SAMYM stringiem.
 _MODULY = [
-    ("1", "Ściągacz Interpretacji"),
-    ("2", "Archiwum Interpretacji"),
-    ("3", "Analiza Wskaźnikowa"),
-    ("4", "Wyroki Sądów (WSA/NSA)"),
-    ("5", "Zestawienie Tygodniowe"),
-    ("6", "Zestawienie Tygodniowe Automat (próbna)"),
-    ("7", "Monitoring i Powiadomienia"),
-    ("8", "Wyszukiwarka Interpretacji"),
-    ("9", "Aktywność systemu"),
-    ("10", "Mój panel"),
-    ("11", "Ustawienia Systemu"),
+    ("1", "Zestawienie Interpretacji"),
+    ("2", "Wyroki Sądów (WSA/NSA)"),
+    ("3", "Monitoring i Powiadomienia"),
+    ("4", "Wyszukiwarka Interpretacji"),
+    ("5", "Aktywność systemu"),
+    ("6", "Mój panel"),
+    ("7", "Ustawienia Systemu"),
 ]
+
+# Numer modulu "Moj panel" — uzywany do odznaki z liczba nowych trafien.
+# Wyciagniety do stalej, zeby przenumerowanie nie wymagalo szukania "10"
+# w srodku petli renderujacej menu.
+_MODUL_MOJ_PANEL = "6"
 
 # Pozycje bez uprawnien: kłódka + wyszarzenie (są widoczne, ale wejście do
 # nich jest zablokowane także w routingu — dwie warstwy zabezpieczenia).
@@ -192,7 +201,7 @@ except Exception:
 
 _pozycje, _dozwolone_idx = [], []
 for _i, (_num, _nazwa) in enumerate(_MODULY):
-    _odznaka = f"  🔴 {_nowych}" if (_num == "10" and _nowych) else ""
+    _odznaka = f"  🔴 {_nowych}" if (_num == _MODUL_MOJ_PANEL and _nowych) else ""
     if auth.ma_dostep(_ROLA, _num):
         _pozycje.append(f"{_num}. {_nazwa}{_odznaka}")
         _dozwolone_idx.append(_i)
@@ -234,24 +243,16 @@ if not auth.ma_dostep(_ROLA, _wybrany_num):
     st.stop()
 
 if _wybrany_num == "1":
-    raporty.run_module()
-elif _wybrany_num == "2":
-    eksplorator_archiwum.run_module()
-elif _wybrany_num == "3":
-    cfo_analyzer.run_module()
-elif _wybrany_num == "4":
-    eksplorator_wyrokow.run_module()
-elif _wybrany_num == "5":
-    zestawienie_tygodniowe.pokaz_zestawienie_tygodniowe()
-elif _wybrany_num == "6":
     zestawienie_automat.pokaz_zestawienie_automat()
-elif _wybrany_num == "7":
+elif _wybrany_num == "2":
+    eksplorator_wyrokow.run_module()
+elif _wybrany_num == "3":
     monitoring_ui.pokaz_monitoring()
-elif _wybrany_num == "8":
+elif _wybrany_num == "4":
     wyszukiwarka_klasyfikacji.pokaz_wyszukiwarke()
-elif _wybrany_num == "9":
+elif _wybrany_num == "5":
     aktywnosc_systemu.pokaz_aktywnosc()
-elif _wybrany_num == "10":
+elif _wybrany_num == "6":
     panel_uzytkownika.pokaz_panel()
-elif _wybrany_num == "11":
+elif _wybrany_num == "7":
     ustawienia_systemu.pokaz_ustawienia()

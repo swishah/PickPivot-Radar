@@ -245,7 +245,7 @@ def generuj_raport_dla_podatku(
     log_fn=print,
     weryfikuj: bool = True,
     generuj_plik: bool = True,
-    maks_prob_douzupelnienia: int = 4,
+    maks_prob_douzupelnienia: int = 2,
 ) -> dict:
     """
     Pelny przebieg dla JEDNEGO podatku: uzupelnia archiwum, weryfikuje
@@ -267,13 +267,18 @@ def generuj_raport_dla_podatku(
     try:
         nowych, status_pobierania = uzupelnij_archiwum(db, podatek, data_od, data_do, log_fn=log_fn)
 
-        rekordy = db_core.pobierz_rekordy_z_archiwum(
+        # EGRESS: do weryfikacji kompletnosci potrzebna jest wylacznie LICZBA
+        # dokumentow. Pelne teksty dociagamy dopiero na koncu i tylko wtedy,
+        # gdy faktycznie budujemy plik Word (patrz nizej). Wczesniej ta linia
+        # sciagala tekst kazdej interpretacji z okresu — raz na starcie i raz
+        # na kazda probe douzupelnienia.
+        liczba_dok = db_core.policz_rekordy_w_archiwum(
             db, podatek=podatek,
             data_od=data_od.strftime("%Y-%m-%d"),
             data_do=data_do.strftime("%Y-%m-%d"),
         )
 
-        if not rekordy:
+        if not liczba_dok:
             return {
                 "podatek": podatek, "liczba_dok": 0, "plik_bytes": None,
                 "nowych_pobranych": nowych, "status": "BRAK_DOKUMENTOW",
@@ -284,7 +289,7 @@ def generuj_raport_dla_podatku(
         wynik_weryfikacji = None
         if weryfikuj:
             wynik_weryfikacji = weryfikuj_kompletnosc(
-                podatek, data_od, data_do, len(rekordy), log_fn=log_fn
+                podatek, data_od, data_do, liczba_dok, log_fn=log_fn
             )
 
             # ── SAMOLECZENIE Z BACKOFFEM ────────────────────────────────────
@@ -314,13 +319,13 @@ def generuj_raport_dla_podatku(
                 nowych_dodatkowo, _ = uzupelnij_archiwum(db, podatek, data_od, data_do, log_fn=log_fn)
                 nowych += nowych_dodatkowo
 
-                rekordy = db_core.pobierz_rekordy_z_archiwum(
+                liczba_dok = db_core.policz_rekordy_w_archiwum(
                     db, podatek=podatek,
                     data_od=data_od.strftime("%Y-%m-%d"),
                     data_do=data_do.strftime("%Y-%m-%d"),
                 )
                 wynik_weryfikacji = weryfikuj_kompletnosc(
-                    podatek, data_od, data_do, len(rekordy), log_fn=log_fn, max_prob=2
+                    podatek, data_od, data_do, liczba_dok, log_fn=log_fn, max_prob=2
                 )
 
                 # Warunek stopu: roznica przestala malec (utknelismy na
@@ -333,8 +338,18 @@ def generuj_raport_dla_podatku(
                            f"nie maja pobieralnej tresci. Koncze douzupelnianie.")
                     break
 
+        # JEDYNE miejsce, w ktorym pelne teksty sa naprawde potrzebne.
+        # generuj_plik=False (Sciagacz -> pobieranie na zadanie) nie pobiera
+        # ich w ogole.
         plik_bytes = None
         if generuj_plik:
+            rekordy = db_core.pobierz_rekordy_z_archiwum(
+                db, podatek=podatek,
+                data_od=data_od.strftime("%Y-%m-%d"),
+                data_do=data_do.strftime("%Y-%m-%d"),
+                z_tekstem=True,
+            )
+            liczba_dok = len(rekordy)
             plik_bytes = generuj_word(rekordy, podatek, opis_okresu, tytul_raportu="Raport na zadanie")
 
         # Status koncowy uwzglednia wynik weryfikacji
@@ -345,7 +360,7 @@ def generuj_raport_dla_podatku(
             status_finalny = "WERYFIKACJA_NIEUDANA"
 
         return {
-            "podatek": podatek, "liczba_dok": len(rekordy), "plik_bytes": plik_bytes,
+            "podatek": podatek, "liczba_dok": liczba_dok, "plik_bytes": plik_bytes,
             "nowych_pobranych": nowych, "status": status_finalny,
             "weryfikacja": wynik_weryfikacji,
         }

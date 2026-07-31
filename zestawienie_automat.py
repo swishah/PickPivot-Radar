@@ -5,7 +5,7 @@ MODUŁ 6: Zestawienie Tygodniowe — AUTOMAT (wersja próbna)
 Równoległy do modułu 5. Zamiast wgrywać plik z GPT, streszcza interpretacje
 WPROST Z BAZY przez OpenRouter (darmowe modele) i renderuje TĘ SAMĄ tabelę
 (L.p. | Sygnatura | Data wydania | Temat | Streszczenie), z zielonym
-oznaczeniem publikacji opóźnionych (identyczna zasada jak w module 5).
+oznaczeniem publikacji opóźnionych.
 
 Cel: porównać jakość darmowego streszczania z dotychczasowym obiegiem DOCX.
 
@@ -64,6 +64,20 @@ DATA_START = "2026-07-15"
 # w Supabase — przy rozjeździe powstałyby dwa wiersze na dokument i moduł
 # pokazywałby tylko jeden z nich.
 MODEL_KANONICZNY = getattr(sopen, "MODEL_DOMYSLNY", "openrouter/free")
+
+# ---------------------------------------------------------------------------
+# STRESZCZANIE PRZEZ OPENROUTER — WYŁĄCZONE
+# ---------------------------------------------------------------------------
+# Streszczenia powstają obecnie WYŁĄCZNIE przez moduł ChatGPT (Scheduled Tasks
+# + MCP) i przez wtyczkę przeglądarkową. Ścieżka OpenRouter jest wygaszona,
+# bo generowała egress: przycisk „Streść brakujące" dociągał pełne teksty
+# interpretacji, a sama metryka „Bez streszczenia" skanowała przy każdym
+# renderze wszystkie dokumenty od DATA_START — razy cztery zakładki podatkowe.
+#
+# Kod NIE został usunięty, tylko odcięty jedną flagą. Powrót = zmiana na True;
+# wtedy wracają: lista wyboru modelu, metryka braków i przycisk streszczania.
+# Nic poza tą stałą nie trzeba ruszać.
+POKAZ_STRESZCZANIE = False
 
 
 # ---------------------------------------------------------------------------
@@ -388,9 +402,17 @@ def _pasek_pdf(podatek: str, model: str) -> None:
     tak wygląda praca z tym modułem. Patrzysz na PIT — chcesz zestawienie PIT,
     bez przewijania na dół i wybierania podatku po raz drugi.
 
-    Wybór tygodnia jest tuż nad przyciskiem, bo domyślny (ostatni zakończony)
-    pasuje w większości przypadków, ale nadrabianie zaległości wymaga sięgnięcia
-    wstecz.
+    LENIWE POBIERANIE (egress)
+      Wcześniej _rekordy_tygodnia() wykonywało się przy KAŻDYM renderze
+      zakładki, żeby wpisać liczbę pozycji na przycisku i policzyć podpis pod
+      nim. To zapytanie ciągnie kolumnę streszczenie_pelne dla całego tygodnia,
+      a zakładki są cztery — więc samo wejście do modułu kosztowało cztery
+      pobrania pełnych streszczeń, nawet gdy nikt PDF-a nie chciał.
+
+      Teraz zapytanie startuje DOPIERO po kliknięciu. Cena przeglądania
+      tabeli: zero. Cena PDF-a: dokładnie jedno zapytanie, to samo co dawniej.
+      Skutek uboczny: liczby pozycji nie ma na przycisku przed kliknięciem —
+      nie da się jej znać, nie pytając bazy. Pojawia się po wygenerowaniu.
     """
     tygodnie = _tygodnie_do_wyboru()
     etykiety = {pdf_zestawienie.opis_tygodnia(p): p for p in tygodnie}
@@ -404,51 +426,68 @@ def _pasek_pdf(podatek: str, model: str) -> None:
                  "jeszcze trwa, więc zestawienie byłoby niepełne.")
         pon = etykiety[wybrana]
 
-        rekordy = _rekordy_tygodnia(pon, model, podatek)
+        # Klucze zawierają tydzień, więc zmiana tygodnia w liście automatycznie
+        # zeruje stan — bez ręcznego czyszczenia session_state.
         klucz_pliku = f"pdf_dane_{podatek}_{pon.isoformat()}"
+        klucz_opisu = f"pdf_opis_{podatek}_{pon.isoformat()}"
 
-        if not rekordy:
-            st.button(f"Brak interpretacji {podatek} w tym tygodniu",
-                      disabled=True, use_container_width=True,
-                      key=f"pdf_pusty_{podatek}")
-        elif st.session_state.get(klucz_pliku):
+        if st.session_state.get(klucz_pliku):
             # Po wygenerowaniu pokazujemy pobieranie zamiast przycisku —
             # inaczej łatwo kliknąć drugi raz i czekać na to samo.
             st.download_button(
-                f"Pobierz zestawienie {podatek} ({len(rekordy)})",
+                f"Pobierz zestawienie {podatek}",
                 data=st.session_state[klucz_pliku],
                 file_name=f"zestawienie_{podatek}_{pon.isoformat()}.pdf",
                 mime="application/pdf",
                 use_container_width=True, type="primary",
                 key=f"pdf_pobierz_{podatek}",
             )
+        elif st.session_state.get(klucz_opisu) == "PUSTO":
+            st.button(f"Brak interpretacji {podatek} w tym tygodniu",
+                      disabled=True, use_container_width=True,
+                      key=f"pdf_pusty_{podatek}")
         else:
-            etykieta = f"Zestawienie PDF — {podatek}, {len(rekordy)} poz."
-            if st.button(etykieta, use_container_width=True,
-                         key=f"pdf_generuj_{podatek}"):
-                _archiwum_font_ostrzezenie()
-                try:
-                    st.session_state[klucz_pliku] = pdf_zestawienie.generuj(
-                        [dict(r) for r in rekordy], pon, podatek=podatek)
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Nie udało się wygenerować PDF: {e}")
+            if st.button(f"Przygotuj zestawienie PDF — {podatek}",
+                         use_container_width=True,
+                         key=f"pdf_generuj_{podatek}",
+                         help="Dane do zestawienia pobierane są z bazy dopiero "
+                              "teraz — samo przeglądanie tabeli nic nie kosztuje."):
+                with st.spinner("Pobieram dane tygodnia i składam PDF…"):
+                    rekordy = _rekordy_tygodnia(pon, model, podatek)
+                    if not rekordy:
+                        st.session_state[klucz_opisu] = "PUSTO"
+                        st.rerun()
+                    _archiwum_font_ostrzezenie()
+                    try:
+                        st.session_state[klucz_pliku] = pdf_zestawienie.generuj(
+                            [dict(r) for r in rekordy], pon, podatek=podatek)
+                        st.session_state[klucz_opisu] = _opis_tygodnia_pdf(
+                            rekordy, pon)
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Nie udało się wygenerować PDF: {e}")
 
         # Podpis pod przyciskiem — dwie liczby, które realnie coś znaczą.
-        if rekordy:
-            bez = sum(1 for r in rekordy if not _sensowne(r.get("streszczenie")))
-            # Ile pozycji PRZEPADŁOBY, gdyby zestawienie wybierało po dacie
-            # wydania zamiast po dacie publikacji. To miara tego, ile ratuje
-            # ten mechanizm — warto ją widzieć.
-            wczesniejsze = sum(1 for r in rekordy
-                               if str(r.get("data_wyd") or "")[:10] < pon.isoformat())
-            uwagi = []
-            if bez:
-                uwagi.append(f"{bez} bez streszczenia")
-            if wczesniejsze:
-                uwagi.append(f"{wczesniejsze} wydanych wcześniej")
-            st.caption(" · ".join(uwagi) if uwagi
-                       else "Wszystkie pozycje ze streszczeniem.")
+        # Liczony raz, przy generowaniu, z rekordów które i tak mamy w ręku.
+        opis = st.session_state.get(klucz_opisu)
+        if opis and opis != "PUSTO":
+            st.caption(opis)
+
+
+def _opis_tygodnia_pdf(rekordy: list[dict], pon: dt.date) -> str:
+    """Podpis pod przyciskiem PDF: ile pozycji, ile bez streszczenia i ile
+    zostałoby pominiętych przy wyborze po dacie wydania zamiast publikacji.
+    Ta ostatnia liczba jest miarą tego, ile ratuje mechanizm oparty na
+    pobrano_at — warto ją widzieć."""
+    bez = sum(1 for r in rekordy if not _sensowne(r.get("streszczenie")))
+    wczesniejsze = sum(1 for r in rekordy
+                       if str(r.get("data_wyd") or "")[:10] < pon.isoformat())
+    uwagi = [f"{len(rekordy)} poz."]
+    if bez:
+        uwagi.append(f"{bez} bez streszczenia")
+    if wczesniejsze:
+        uwagi.append(f"{wczesniejsze} wydanych wcześniej")
+    return " · ".join(uwagi)
 
 
 def _archiwum_font_ostrzezenie() -> None:
@@ -504,13 +543,18 @@ def _zakladka(podatek: str, model: str, klucz_api: str | None) -> None:
                     f"(od {DATA_START}).")
         return
 
-    brak = _brakujace(podatek, model)
+    if not POKAZ_STRESZCZANIE:
+        # Jedna metryka zamiast dwoch — druga wymagalaby _brakujace(), czyli
+        # skanu wszystkich dokumentow podatku przy kazdym renderze.
+        st.metric("Interpretacji (wszystkie)", total)
+        brak = []
+    else:
+        brak = _brakujace(podatek, model)
+        k1, k2 = st.columns(2)
+        k1.metric("Interpretacji (wszystkie)", total)
+        k2.metric("Bez streszczenia", len(brak))
 
-    k1, k2 = st.columns(2)
-    k1.metric("Interpretacji (wszystkie)", total)
-    k2.metric("Bez streszczenia", len(brak))
-
-    if brak:
+    if POKAZ_STRESZCZANIE and brak:
         if not klucz_api:
             st.warning(
                 "Brak klucza OpenRouter — dodaj sekcję [openrouter] w Secrets, "
@@ -544,10 +588,14 @@ def _zakladka(podatek: str, model: str, klucz_api: str | None) -> None:
 
     _pelne_streszczenia(rekordy)
 
+    ogon = (" Streszczenia generowane modelem "
+            f"`{model}` (OpenRouter) — zawsze weryfikuj przed użyciem."
+            if POKAZ_STRESZCZANIE else
+            " Streszczenia pochodzą z modułu ChatGPT i z wtyczki "
+            "przeglądarkowej — zawsze weryfikuj przed użyciem.")
     st.caption(
-        f"„Data publikacji” = data dogrania do bazy (pobrania). Sortuj po niej, "
-        f"aby nic nie umknęło przy publikacjach opóźnionych. Streszczenia "
-        f"generowane modelem `{model}` (OpenRouter) — zawsze weryfikuj przed użyciem."
+        "„Data publikacji” = data dogrania do bazy (pobrania). Sortuj po niej, "
+        "aby nic nie umknęło przy publikacjach opóźnionych." + ogon
     )
 
 
@@ -585,10 +633,10 @@ def _streszczaj(pozycje: list[dict], podatek: str, model: str, klucz_api: str) -
 # WEJŚCIE
 # ---------------------------------------------------------------------------
 def pokaz_zestawienie_automat() -> None:
-    st.header("🤖 Zestawienie tygodniowe — Automat (wersja próbna)")
+    st.header("📑 Zestawienie interpretacji")
     st.caption(
-        "Streszczenia generowane wprost z bazy przez OpenRouter (darmowe modele). "
-        "Ta sama tabela co w module 5 — do porównania jakości z obiegiem DOCX."
+        "Interpretacje indywidualne z bazy wraz ze streszczeniami. "
+        "Streszczenia powstają w module ChatGPT i we wtyczce przeglądarkowej."
     )
     st.caption(
         f"Zakres: interpretacje wydane od **{dt.date.fromisoformat(DATA_START):%d.%m.%Y}** "
@@ -601,30 +649,38 @@ def pokaz_zestawienie_automat() -> None:
         st.error(f"Nie udało się przygotować tabeli streszczeń: {e}")
         return
 
-    klucz_api = _api_key()
+    if POKAZ_STRESZCZANIE:
+        klucz_api = _api_key()
 
-    c1, c2 = st.columns([2, 3])
-    with c1:
-        model = st.selectbox("Model (OpenRouter)", options=sopen.MODELE_DO_WYBORU,
-                             index=0, key="auto_model")
-    with c2:
-        st.caption(
-            "Domyślnie `openrouter/free` (auto-router darmowych modeli — odporny "
-            "na rotację oferty). Limit darmowy: ~20 zapytań/min, 50/dobę "
-            "(≥10 kredytów podnosi do ~1000/dobę)."
-        )
+        c1, c2 = st.columns([2, 3])
+        with c1:
+            model = st.selectbox("Model (OpenRouter)",
+                                 options=sopen.MODELE_DO_WYBORU,
+                                 index=0, key="auto_model")
+        with c2:
+            st.caption(
+                "Domyślnie `openrouter/free` (auto-router darmowych modeli — odporny "
+                "na rotację oferty). Limit darmowy: ~20 zapytań/min, 50/dobę "
+                "(≥10 kredytów podnosi do ~1000/dobę)."
+            )
 
-    # Lista rozwijana filtruje wiersze po kolumnie `model`. Wybranie modelu
-    # innego niż kanoniczny ukrywa wszystko, co zapisała wtyczka — a to
-    # wygląda jak zniknięcie danych, nie jak zmiana filtra.
-    if model != MODEL_KANONICZNY:
-        st.warning(
-            f"Wybrany model `{model}` różni się od kanonicznego "
-            f"`{MODEL_KANONICZNY}`. Streszczenia zapisane przez wtyczkę "
-            "przeglądarkową są przypisane do modelu kanonicznego, więc "
-            "**nie będą tu widoczne**, dopóki nie wrócisz na niego w liście "
-            "powyżej."
-        )
+        # Lista rozwijana filtruje wiersze po kolumnie `model`. Wybranie modelu
+        # innego niż kanoniczny ukrywa wszystko, co zapisała wtyczka — a to
+        # wygląda jak zniknięcie danych, nie jak zmiana filtra.
+        if model != MODEL_KANONICZNY:
+            st.warning(
+                f"Wybrany model `{model}` różni się od kanonicznego "
+                f"`{MODEL_KANONICZNY}`. Streszczenia zapisane przez wtyczkę "
+                "przeglądarkową są przypisane do modelu kanonicznego, więc "
+                "**nie będą tu widoczne**, dopóki nie wrócisz na niego w liście "
+                "powyżej."
+            )
+    else:
+        # Bez wyboru modelu tabela zawsze filtruje po modelu kanonicznym —
+        # czyli po tym, którym zapisuje ChatGPT i wtyczka. To jedyny model,
+        # pod którym cokolwiek w bazie jest.
+        klucz_api = None
+        model = MODEL_KANONICZNY
 
     for zakladka_ui, podatek in zip(st.tabs(PODATKI), PODATKI):
         with zakladka_ui:

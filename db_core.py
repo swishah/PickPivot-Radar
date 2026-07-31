@@ -184,12 +184,11 @@ def zapisz_wiele_do_archiwum(db: SupabaseDB, rekordy: list, pobrano_kto: str = "
     return db.wykonaj_wiele(sql, dane)
 
 
-def pobierz_rekordy_z_archiwum(db: SupabaseDB, podatek=None, rok=None, miesiac=None,
-                                  data_od=None, data_do=None) -> list:
-    """
-    Pobiera rekordy z opcjonalnym filtrowaniem.
-    data_od/data_do: stringi YYYY-MM-DD do filtrowania zakresu dat.
-    """
+def _warunki_archiwum(podatek=None, rok=None, miesiac=None,
+                      data_od=None, data_do=None) -> tuple[str, list]:
+    """Wspólny fragment WHERE dla zapytań o archiwum. Wydzielony, żeby licznik
+    i pobranie rekordów NIGDY się nie rozjechały — inaczej weryfikacja
+    kompletności porównywałaby dwa różne zbiory."""
     kl, pa = [], []
     if podatek:
         kl.append("podatek = %s"); pa.append(podatek)
@@ -200,8 +199,50 @@ def pobierz_rekordy_z_archiwum(db: SupabaseDB, podatek=None, rok=None, miesiac=N
     elif rok:
         kl.append("data_wyd LIKE %s"); pa.append(f"{rok}%")
     where = f"WHERE {' AND '.join(kl)}" if kl else ""
-    rows = db.wykonaj(f"SELECT * FROM dokumenty {where} ORDER BY data_wyd DESC",
-                       pa if pa else None, fetch=True)
+    return where, pa
+
+
+def policz_rekordy_w_archiwum(db: SupabaseDB, podatek=None, rok=None,
+                              miesiac=None, data_od=None, data_do=None) -> int:
+    """
+    Sama LICZBA dokumentów spełniających kryteria — bez pobierania czegokolwiek.
+
+    DLACZEGO ISTNIEJE (egress)
+      Weryfikacja kompletności w raport_silnik potrzebowała wyłącznie
+      len(rekordy), a wołała pobierz_rekordy_z_archiwum() — czyli ściągała
+      PEŁNE TEKSTY wszystkich interpretacji z okresu, i to raz na każdą próbę
+      douzupełnienia. Przy kilkuset dokumentach to dziesiątki megabajtów
+      transferu po to, żeby policzyć wiersze. Ta funkcja robi to samo
+      za kilkadziesiąt bajtów.
+    """
+    where, pa = _warunki_archiwum(podatek, rok, miesiac, data_od, data_do)
+    rows = db.wykonaj(f"SELECT COUNT(*) AS n FROM dokumenty {where}",
+                      pa if pa else None, fetch=True)
+    return int(rows[0]["n"]) if rows else 0
+
+
+def pobierz_rekordy_z_archiwum(db: SupabaseDB, podatek=None, rok=None, miesiac=None,
+                                  data_od=None, data_do=None,
+                                  z_tekstem: bool = False) -> list:
+    """
+    Pobiera rekordy z opcjonalnym filtrowaniem.
+    data_od/data_do: stringi YYYY-MM-DD do filtrowania zakresu dat.
+
+    z_tekstem — czy dociągnąć kolumnę `tekst` (pełna treść interpretacji).
+
+    UWAGA: domyślnie False, czyli ODWROTNIE niż dawne zachowanie (`SELECT *`
+    zawsze ciągnął tekst). Zmiana jest celowa: tekst jest potrzebny wyłącznie
+    przy budowaniu dokumentu Word, a wołaczy tej funkcji było kilku i większość
+    z nich tekstu nie używała wcale. Domyślne „nie” sprawia, że nowy wołacz
+    musi świadomie poprosić o transfer, zamiast dostać go po cichu.
+    """
+    where, pa = _warunki_archiwum(podatek, rok, miesiac, data_od, data_do)
+    kolumny = "id, sygnatura, podatek, data_wyd, link, format_zr, pobrano_dt"
+    if z_tekstem:
+        kolumny += ", tekst"
+    rows = db.wykonaj(
+        f"SELECT {kolumny} FROM dokumenty {where} ORDER BY data_wyd DESC",
+        pa if pa else None, fetch=True)
     return [_row_do_rekordu(r) for r in rows]
 
 

@@ -32,22 +32,24 @@ ROLE = ("admin", "user")
 # Mapa uprawnień: klucz modułu -> zbiór ról z dostępem.
 # 'admin' obejmuje też konto zaszyte DORADCA (superadmin).
 # Klucze odpowiadają modułom z menu (numer startowy pozycji).
+# PRZENUMEROWANE po wycofaniu modułów Ściągacz / Archiwum / Analiza
+# Wskaźnikowa / Zestawienie Tygodniowe. Klucze muszą się zgadzać jeden do
+# jednego z listą _MODULY w app.py — rozjazd oznaczałby albo kłódkę na module
+# dostępnym, albo (gorzej) otwarcie modułu administracyjnego dla użytkownika.
 UPRAWNIENIA = {
-    "1": {"admin"},                     # Ściągacz
-    "2": {"admin", "user"},             # Archiwum
-    "3": {"admin", "user"},             # Analiza Wskaźnikowa
-    "4": {"admin", "user"},             # Wyroki
-    "5": {"admin", "user"},             # Zestawienie Tygodniowe (user: tylko odczyt)
-    "6": {"admin", "user"},             # Zestawienie Automat
-    "7": {"admin", "user"},             # Monitoring (user: tylko własne)
-    "8": {"admin", "user"},             # Wyszukiwarka
-    "9": {"admin", "user"},             # Aktywność systemu (wszyscy)
-    "10": {"admin", "user"},            # Mój panel (wszyscy)
-    "11": {"admin"},                    # Ustawienia Systemu
+    "1": {"admin", "user"},             # Zestawienie Interpretacji
+    "2": {"admin", "user"},             # Wyroki (WSA/NSA)
+    "3": {"admin", "user"},             # Monitoring (user: tylko własne)
+    "4": {"admin", "user"},             # Wyszukiwarka
+    "5": {"admin", "user"},             # Aktywność systemu (wszyscy)
+    "6": {"admin", "user"},             # Mój panel (wszyscy)
+    "7": {"admin"},                     # Ustawienia Systemu
 }
 
 # Uprawnienia szczegółowe (nie-modułowe), sprawdzane wewnątrz modułów:
-#   'zestawienie_wgrywanie' — wgrywanie plików DOCX w module 5 (tylko admin)
+#   'zestawienie_wgrywanie' — wgrywanie plików DOCX w wycofanym module
+#                             Zestawienie Tygodniowe; klucz zostaje na wypadek
+#                             przywrócenia modułu do menu
 #   'monitoring_wszystkie'  — wgląd/kasowanie cudzych alertów (tylko admin)
 #   'zarzadzanie_kontami'   — panel kont w Ustawieniach (tylko admin)
 UPRAWNIENIA_SZCZEGOLOWE = {
