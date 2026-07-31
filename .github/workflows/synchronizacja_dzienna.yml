@@ -1,40 +1,35 @@
 name: Synchronizacja dzienna
 
 on:
-  # 6 przebiegow dziennie TYLKO w dni robocze (1-5). W weekend pobierania nie
-  # ma — chodza wtedy same streszczenia (doganianie). MF (KIS) w weekend i tak
-  # praktycznie nie publikuje, a poniedzialkowe okno lookback nadrobi zaleglosc.
-  # Czasy PL (lato): 9,12,15,18,21,00 -> UTC 7,10,13,16,19,22.
-  # Nocny przebieg (22:00 UTC): szersze okno 30 dni + mail-podsumowanie.
   schedule:
-    - cron: '0 7,10,13,16,19 * * 1-5'
-    - cron: '0 22 * * 1-5'
+    # GitHub Actions cron dziala w UTC i NIE zna stref czasowych.
+    # Ponizsze godziny sa ustawione pod czas LETNI (Polska = UTC+2):
+    #   04:30 UTC -> 06:30 PL
+    #   21:30 UTC -> 23:30 PL
+    # Zima (UTC+1) wszystko przesunie sie o godzine pozniej wzgledem zegara
+    # polskiego: 05:30 i 22:30. Swiadomie akceptujemy to przesuniecie -
+    # alternatywa (dwie pary cronow + odsiewanie w skrypcie) komplikuje
+    # kod bardziej, niz jest warta.
+    #
+    # Dwa przebiegi zamiast jednego: rano zbiera to, co MF opublikowalo w nocy,
+    # wieczorem to, co doszlo w ciagu dnia roboczego.
+    - cron: '30 4 * * *'
+    - cron: '30 21 * * *'
 
+  # Mozliwosc recznego uruchomienia z zakladki Actions (do testow)
   workflow_dispatch:
-    inputs:
-      okno_dni:
-        description: 'Okno synchronizacji w dniach (puste = 10)'
-        required: false
-        default: ''
-      wyslij_mail:
-        description: 'Wyslac mail-podsumowanie? (1 = tak)'
-        required: false
-        default: '0'
-
-concurrency:
-  group: synchronizacja-dzienna
-  cancel-in-progress: false
 
 jobs:
   synchronizuj:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 45
+
     steps:
       - name: Pobierz kod repozytorium
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Ustaw Python 3.11
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.11'
 
@@ -43,38 +38,18 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests PyPDF2 python-docx beautifulsoup4 lxml psycopg2-binary
 
-      - name: Parametry przebiegu (okno + mail)
-        id: params
-        run: |
-          # Przebieg nocny (PL 00:00 = 22:00 UTC): szersze okno 30 dni (lapie
-          # publikacje opoznione) i jedyny mail-podsumowanie w ciagu doby.
-          # Pozostale przebiegi: wask okno 10 dni, bez maila.
-          if [ "${{ github.event.schedule }}" = "0 22 * * 1-5" ]; then
-            echo "okno=30" >> "$GITHUB_OUTPUT"
-            echo "mail=1"  >> "$GITHUB_OUTPUT"
-          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            OKNO_IN="${{ github.event.inputs.okno_dni }}"
-            echo "okno=${OKNO_IN:-10}" >> "$GITHUB_OUTPUT"
-            echo "mail=${{ github.event.inputs.wyslij_mail }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "okno=10" >> "$GITHUB_OUTPUT"
-            echo "mail=0"  >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Uruchom synchronizacje
+      - name: Uruchom synchronizacje dzienna
         env:
-          SUPABASE_HOST:            ${{ secrets.SUPABASE_HOST }}
-          SUPABASE_PORT:            ${{ secrets.SUPABASE_PORT }}
-          SUPABASE_DB:              ${{ secrets.SUPABASE_DB }}
-          SUPABASE_USER:            ${{ secrets.SUPABASE_USER }}
-          SUPABASE_PASSWORD:        ${{ secrets.SUPABASE_PASSWORD }}
-          GMAIL_ADRES:              ${{ secrets.GMAIL_ADRES }}
-          GMAIL_HASLO_APLIKACJI:    ${{ secrets.GMAIL_HASLO_APLIKACJI }}
-          EMAIL_ODBIORCA:           ${{ secrets.EMAIL_ODBIORCA }}
-          OKNO_SYNCHRONIZACJI_DNI:  ${{ steps.params.outputs.okno }}
-          SYNC_MAIL:                ${{ steps.params.outputs.mail }}
+          SUPABASE_HOST:          ${{ secrets.SUPABASE_HOST }}
+          SUPABASE_PORT:          ${{ secrets.SUPABASE_PORT }}
+          SUPABASE_DB:            ${{ secrets.SUPABASE_DB }}
+          SUPABASE_USER:          ${{ secrets.SUPABASE_USER }}
+          SUPABASE_PASSWORD:      ${{ secrets.SUPABASE_PASSWORD }}
+          GMAIL_ADRES:            ${{ secrets.GMAIL_ADRES }}
+          GMAIL_HASLO_APLIKACJI:  ${{ secrets.GMAIL_HASLO_APLIKACJI }}
+          EMAIL_ODBIORCA:         ${{ secrets.EMAIL_ODBIORCA }}
         run: python synchronizacja_dzienna.py
 
       - name: Podsumowanie
         if: always()
-        run: echo "Synchronizacja zakonczona (okno ${{ steps.params.outputs.okno }} dni, mail ${{ steps.params.outputs.mail }})."
+        run: echo "Synchronizacja zakonczona. Sprawdz logi powyzej dla szczegolow."

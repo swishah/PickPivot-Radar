@@ -1,1 +1,67 @@
+name: Cotygodniowy Raport Interpretacji
 
+on:
+  schedule:
+    # UWAGA: GitHub Actions cron dziala w UTC, Polska to UTC+1 (zima) / UTC+2 (lato)
+    #
+    # OGRANICZONE Z 20 PROB DO 4 (oszczednosc egressu).
+    # Skrypt jest IDEMPOTENTNY - kazda proba sprawdza, co juz jest w archiwum,
+    # i dociaga TYLKO brakujace dokumenty. 20 prob miало sens jako ubezpieczenie
+    # od blokad API Ministerstwa Finansow, ale kazde uruchomienie to rowniez
+    # ruch do bazy. Cztery proby rozlozone na 24h zachowuja sens ubezpieczenia
+    # (jesli MF blokuje o 15:00, o 21:00 zwykle juz nie), a kosztuja 1/5 tego,
+    # co poprzednio.
+    #
+    # Godziny w UTC (opisy dla czasu zimowego, UTC+1):
+    - cron: '0 14 * * 6'   # sob 15:00 PL
+    - cron: '0 20 * * 6'   # sob 21:00 PL
+    - cron: '0 8 * * 0'    # niedz 09:00 PL
+    - cron: '0 1 * * 1'    # pon 02:00 PL (ostatnia proba przed koncem okna)
+
+  # Mozliwosc recznego uruchomienia z zakladki Actions (do testow)
+  workflow_dispatch:
+    inputs:
+      test_tydzien:
+        description: 'Opcjonalnie: data YYYY-MM-DD z tygodnia do przetworzenia (test)'
+        required: false
+        default: ''
+
+jobs:
+  generuj-raport:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Pobierz kod repozytorium
+        uses: actions/checkout@v4
+
+      - name: Ustaw Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Zainstaluj zaleznosci
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests PyPDF2 python-docx beautifulsoup4 lxml psycopg2-binary
+
+      - name: Uruchom skrypt raportu tygodniowego
+        env:
+          SUPABASE_HOST:          ${{ secrets.SUPABASE_HOST }}
+          SUPABASE_PORT:          ${{ secrets.SUPABASE_PORT }}
+          SUPABASE_DB:            ${{ secrets.SUPABASE_DB }}
+          SUPABASE_USER:          ${{ secrets.SUPABASE_USER }}
+          SUPABASE_PASSWORD:      ${{ secrets.SUPABASE_PASSWORD }}
+          GMAIL_ADRES:            ${{ secrets.GMAIL_ADRES }}
+          GMAIL_HASLO_APLIKACJI:  ${{ secrets.GMAIL_HASLO_APLIKACJI }}
+          EMAIL_ODBIORCA:         ${{ secrets.EMAIL_ODBIORCA }}
+        run: |
+          if [ -n "${{ github.event.inputs.test_tydzien }}" ]; then
+            python raport_tygodniowy.py --test-tydzien "${{ github.event.inputs.test_tydzien }}"
+          else
+            python raport_tygodniowy.py
+          fi
+
+      - name: Podsumowanie w logu
+        if: always()
+        run: echo "Zadanie zakonczone. Sprawdz logi powyzej dla szczegolow."
