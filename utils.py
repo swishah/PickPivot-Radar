@@ -50,7 +50,8 @@ FRAZY_KLUCZOWE = [
 # uzywany przez API MF - prawdziwy filtr to KODY_PRZEPISOW ponizej. Ten slownik
 # zostaje tylko jako pomocniczy (np. do wyswietlania prefiksu w UI), ale nigdy
 # nie powinien byc przekazywany do pobierz_wszystko_z_okresu / szukaj_w_api_mf.
-KODY_PODATKOW = {"PIT": ".4011.", "CIT": ".4010.", "VAT": ".4012.", "AKCYZA": ".4013."}
+KODY_PODATKOW = {"PIT": ".4011.", "CIT": ".4010.", "VAT": ".4012.", "AKCYZA": ".4013.",
+                 "PCC": ".4014."}
 
 # ► KLUCZOWE: prawdziwy filtr uzywany przez strone eureka.mf.gov.pl do
 # zawezania wynikow do konkretnego podatku. To NIE jest filtrowanie po
@@ -62,7 +63,40 @@ KODY_PRZEPISOW = {
     "VAT":    29955,
     "CIT":    29985,
     "AKCYZA": 38830,
+    "PCC":    31693,
 }
+
+
+# ---------------------------------------------------------------------------
+# DATY STARTOWE PODATKOW
+# ---------------------------------------------------------------------------
+# Kazdy podatek ma prog daty wydania, ponizej ktorego dokumentow NIE zbieramy.
+# Nie jest to jedna wspolna data, bo podatki dochodza do systemu w roznych
+# momentach — PCC wchodzi 3 sierpnia 2026 i swiadomie NIE ciagniemy historii.
+#
+# DLACZEGO OSOBNE DATY, A NIE JEDNA WSPOLNA
+#   Przy jednej wspolnej dacie (15.07) moduly liczylyby braki PCC juz od
+#   polowy lipca i pokazywaly "Bez streszczenia: 0" tam, gdzie prawda brzmi
+#   "jeszcze nie zbieramy". Rozroznienie "brak danych" od "zero brakow" jest
+#   tu istotne — inaczej nie widac, czy automat dziala, czy stoi.
+#
+# To JEDYNE miejsce, w ktorym te daty sa zapisane. Moduly wolaja data_start().
+DATA_START_DOMYSLNA = "2026-07-15"
+
+DATY_START_PODATKU = {
+    "PCC": "2026-08-03",
+}
+
+
+def data_start(podatek: str | None = None) -> str:
+    """Prog daty wydania dla podatku (YYYY-MM-DD).
+
+    Bez argumentu zwraca date domyslna. Dla podatku bez wlasnego wpisu tez
+    zwraca domyslna — dodanie kolejnego podatku bez daty startowej po prostu
+    zadziala jak dotad, zamiast wysypac sie na KeyError."""
+    if not podatek:
+        return DATA_START_DOMYSLNA
+    return DATY_START_PODATKU.get(podatek.upper(), DATA_START_DOMYSLNA)
 
 MIESIACE_PL   = [
     "Styczeń", "Luty", "Marzec", "Kwiecień", "Maj", "Czerwiec",

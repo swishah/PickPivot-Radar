@@ -32,14 +32,18 @@ import time
 
 import db_core
 import streszczacz_openrouter as sopen
+import utils
 
-PODATKI = ["PIT", "CIT", "VAT", "AKCYZA"]
+PODATKI = ["PIT", "CIT", "VAT", "AKCYZA", "PCC"]
 # UWAGA: używamy `or`, nie os.environ.get(klucz, domyslna) — bo workflow
 # ZAWSZE ustawia te zmienne, a przy pustym polu (harmonogram albo puste pole
 # ręcznego uruchomienia) trafia tu PUSTY łańcuch. get(...) podstawiłby domyślną
 # tylko przy braku zmiennej, nie przy pustym łańcuchu — stąd wcześniej pusty
 # model i błąd „No models provided”.
-DATA_START = os.environ.get("STRESZCZ_DATA_START") or "2026-07-15"
+# Najwczesniejszy prog sposrod wszystkich podatkow — uzywany w zapytaniu jako
+# wstepne odsianie. Progi per podatek (utils.DATY_START_PODATKU) stosowane sa
+# zaraz po pobraniu; patrz _do_streszczenia().
+DATA_START = os.environ.get("STRESZCZ_DATA_START") or utils.DATA_START_DOMYSLNA
 MODEL = os.environ.get("OPENROUTER_MODEL") or sopen.MODEL_DOMYSLNY
 PRZERWA_S = float(os.environ.get("STRESZCZ_PRZERWA_S") or "3.5")
 MAKS_NA_RUN = int(os.environ.get("STRESZCZ_MAKS_NA_RUN") or "40")
@@ -114,6 +118,14 @@ def _do_streszczenia(db: db_core.SupabaseDB, model: str) -> list[dict]:
         (model, PODATKI, DATA_START),
         fetch=True,
     )
+    # Prog daty jest w zapytaniu ustawiony na NAJWCZESNIEJSZY z progow
+    # (DATA_START = 15.07). Podatki o pozniejszym starcie — PCC od 03.08 —
+    # odsiewamy tutaj. Robimy to po stronie Pythona, a nie w SQL, bo wiersze
+    # sa juz pobrane i lekkie (same metadane, bez tresci), wiec nic to nie
+    # kosztuje, a warunek pozostaje czytelny. Gdyby progow bylo duzo wiecej
+    # albo roznice siegaly miesiecy, warto przeniesc to do zapytania.
+    rows = [r for r in rows
+            if str(r.get("data_wyd") or "") >= utils.data_start(r.get("podatek"))]
     return [r for r in rows if not _sensowne(r.get("s_streszcz"))]
 
 

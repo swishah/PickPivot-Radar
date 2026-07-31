@@ -27,7 +27,7 @@ import auth
 import monitoring_fraz as mfr
 from streszczacz_openrouter import BRANZE, PRZEDMIOTY
 
-PODATKI_FRAZY = ["(wszystkie)", "PIT", "CIT", "VAT", "AKCYZA"]
+PODATKI_FRAZY = ["(wszystkie)", "PIT", "CIT", "VAT", "AKCYZA", "PCC"]
 PODATKI_PRZEDMIOTY = list(PRZEDMIOTY.keys())
 
 

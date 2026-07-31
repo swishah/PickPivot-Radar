@@ -163,6 +163,26 @@ PRZEDMIOTY = {
         "obowiązki ewidencyjne i deklaracyjne (w tym prosumenci)",
         "klasyfikacja wyrobów (kody CN)", "inne zagadnienia akcyzy",
     ],
+    "PCC": [
+        "umowa sprzedaży rzeczy i praw majątkowych",
+        "umowa pożyczki",
+        "umowa darowizny (przejęcie długów i ciężarów)",
+        "umowa dożywocia i renta",
+        "dział spadku i zniesienie współwłasności",
+        "ustanowienie hipoteki",
+        "umowa spółki i zmiana umowy spółki",
+        "podwyższenie kapitału zakładowego i dopłaty",
+        "przekształcenie, łączenie i podział spółek",
+        # Najczęstszy realnie problem PCC — wyłączenie z art. 2 pkt 4 ustawy.
+        # Świadomie osobna pozycja, a nie „inne”: gdyby wpadało do worka,
+        # monitoring fraz przestałby to wyłapywać jako odrębne zagadnienie.
+        "wyłączenie przy czynnościach opodatkowanych VAT",
+        "zwolnienia podmiotowe i przedmiotowe (PCC)",
+        "podstawa opodatkowania i wartość rynkowa",
+        "obowiązek podatkowy, płatnik (notariusz), solidarność",
+        "deklaracja PCC-3, terminy i zwrot podatku",
+        "inne zagadnienia PCC",
+    ],
 }
 
 

@@ -2,7 +2,7 @@
 """
 MODUŁ: Zestawienie Tygodniowe — Skaner Doradca
 ===============================================================================
-Cztery zakładki (PIT / CIT / VAT / AKCYZA).
+Pięć zakładek (PIT / CIT / VAT / AKCYZA / PCC).
 
 OBIEG:
   1. Wgrywasz plik z GPT „Tygodniowy Research” (DOCX zalecany; PDF działa
@@ -43,7 +43,7 @@ from streszczacz_openrouter import _waliduj_branze, _waliduj_przedmioty
 # ---------------------------------------------------------------------------
 # KONFIGURACJA
 # ---------------------------------------------------------------------------
-PODATKI = ["PIT", "CIT", "VAT", "AKCYZA"]
+PODATKI = ["PIT", "CIT", "VAT", "AKCYZA", "PCC"]
 
 ZIELEN_GLOWNA = "#386520"
 ZIELEN_TLO = "#dcefd8"

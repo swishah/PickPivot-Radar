@@ -183,7 +183,7 @@ def _renderuj_przegladarke(db, dbw):
 
     c1, c2, c3, c4, c5 = st.columns([2, 2, 2, 2.4, 1])
     with c1:
-        f_pod = st.selectbox("Podatek:", [None, "PIT", "CIT", "VAT", "AKCYZA"],
+        f_pod = st.selectbox("Podatek:", [None, "PIT", "CIT", "VAT", "AKCYZA", "PCC"],
                              format_func=lambda x: "Wszystkie" if x is None else x,
                              key="wyr_pod")
     with c2:

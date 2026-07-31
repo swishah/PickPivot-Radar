@@ -34,7 +34,7 @@ try:
 except Exception:  # pragma: no cover
     _TZ = None
 
-PODATKI = ["PIT", "CIT", "VAT", "AKCYZA"]
+PODATKI = ["PIT", "CIT", "VAT", "AKCYZA", "PCC"]
 DNI_KRONIKI = 14
 
 

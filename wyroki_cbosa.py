@@ -27,6 +27,9 @@ SYMBOLE SPRAW (klasyfikacja sadowa) — filtr glowny:
   6112 = Podatek dochodowy od osob fizycznych (PIT)
   6113 = Podatek dochodowy od osob prawnych (CIT)
   6111 = Podatek akcyzowy (AKCYZA)
+  6116 = Podatek od czynnosci cywilnoprawnych, oplata skarbowa oraz inne
+         podatki i oplaty (PCC) — symbol SZERSZY niz sam PCC, patrz
+         komentarz przy SYMBOLE_PODATKOW
   Tryb kalibracji wypisuje opisy symboli z pobranych dokumentow — pierwsze
   uruchomienie zweryfikuje te mape na zywych danych.
 """
@@ -68,6 +71,14 @@ SYMBOLE_PODATKOW = {
     "AKCYZA": "6111",
     "PIT":    "6112",
     "CIT":    "6113",
+    # 6116 = "Podatek od czynnosci cywilnoprawnych, oplata skarbowa oraz inne
+    # podatki i oplaty". UWAGA: symbol jest SZERSZY niz sam PCC — zlapie tez
+    # sprawy o oplate skarbowa i "inne podatki i oplaty" (np. oplata
+    # targowa, uzdrowiskowa). Swiadomie nie zawezamy dalej: CBOSA nie ma
+    # symbolu wylacznie dla PCC, a odsiewanie po tresci sentencji dawaloby
+    # falszywe negatywy. Nadmiarowe wyroki lepiej odfiltrowac wzrokiem
+    # w module Wyroki niz stracic trafienie.
+    "PCC":    "6116",
 }
 
 

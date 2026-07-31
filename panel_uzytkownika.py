@@ -28,7 +28,7 @@ from zestawienie_tygodniowe import _pasek_stron
 
 NA_STRONIE = 50
 LIMIT_POBRANIA = 2000
-PODATKI = ["PIT", "CIT", "VAT", "AKCYZA"]
+PODATKI = ["PIT", "CIT", "VAT", "AKCYZA", "PCC"]
 
 
 def _ja() -> str:

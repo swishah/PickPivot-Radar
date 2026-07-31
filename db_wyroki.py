@@ -38,7 +38,7 @@ SCHEMA_WYROKI = [
         rodzaj          TEXT DEFAULT '',           -- Wyrok / Postanowienie / Uchwala
         sad             TEXT DEFAULT '',
         data_orzeczenia TEXT NOT NULL,             -- YYYY-MM-DD
-        podatek         TEXT DEFAULT '',           -- PIT/CIT/VAT/AKCYZA (mapowane z symbolu)
+        podatek         TEXT DEFAULT '',           -- PIT/CIT/VAT/AKCYZA/PCC (mapowane z symbolu)
         symbole         TEXT DEFAULT '',           -- surowe symbole z opisem
         hasla           TEXT DEFAULT '',
         skarzony_organ  TEXT DEFAULT '',

@@ -35,6 +35,7 @@ from datetime import datetime, timedelta
 
 import db_core
 import db_wyroki
+import utils
 import wyroki_cbosa as cbosa
 
 
@@ -59,6 +60,24 @@ def _okno(dni: int):
     return od.strftime("%Y-%m-%d"), dz.strftime("%Y-%m-%d")
 
 
+def _okno_dla_podatku(od: str, do: str, podatek: str):
+    """Przycina okno wyszukiwania do daty startowej podatku.
+
+    Strumienie pracuja na ruchomych oknach wstecz — metadane 10 dni,
+    uzasadnienia 180, prawomocnosc 455. Dla PCC (start 03.08.2026) oznaczaloby
+    to zaciagniecie wyrokow sprzed wejscia podatku do systemu, czyli dokladnie
+    tej historii, ktorej nie chcemy.
+
+    Zwraca (od, do) albo None, gdy cale okno lezy przed data startowa —
+    wtedy podatek pomijamy w tym przebiegu. Dla podatkow bez wlasnej daty
+    startowej nie zmienia niczego.
+    """
+    prog = utils.data_start(podatek)
+    if do < prog:
+        return None
+    return (max(od, prog), do)
+
+
 # ---------------------------------------------------------------------------
 # TRYB LEKKI — tylko sygnatury i metadane, BEZ pelnych tekstow
 # ---------------------------------------------------------------------------
@@ -80,9 +99,14 @@ def strumien_metadane(db, sesja, formularz, log=print):
     bledy_wyszukiwania = 0
 
     for podatek, symbol in cbosa.SYMBOLE_PODATKOW.items():
-        log(f"\n[{podatek}] symbol {symbol}")
+        okno = _okno_dla_podatku(od, do, podatek)
+        if okno is None:
+            log(f"\n[{podatek}] pominiety — start podatku {utils.data_start(podatek)}")
+            continue
+        od_p, do_p = okno
+        log(f"\n[{podatek}] symbol {symbol} | okno {od_p}..{do_p}")
         try:
-            lista, total = cbosa.szukaj(sesja, formularz, symbol, od, do, log_fn=log)
+            lista, total = cbosa.szukaj(sesja, formularz, symbol, od_p, do_p, log_fn=log)
         except cbosa.BladCBOSA as e:
             log(f"[{podatek}] BLAD wyszukiwania: {e}")
             db_wyroki.zapisz_historie_sync_wyrokow(db, "METADANE", od, do, podatek,
@@ -139,9 +163,14 @@ def strumien_uzasadnienia(db, sesja, formularz, log=print):
     bledy_wyszukiwania = 0
 
     for podatek, symbol in cbosa.SYMBOLE_PODATKOW.items():
-        log(f"\n[{podatek}] symbol {symbol}")
+        okno = _okno_dla_podatku(od, do, podatek)
+        if okno is None:
+            log(f"\n[{podatek}] pominiety — start podatku {utils.data_start(podatek)}")
+            continue
+        od_p, do_p = okno
+        log(f"\n[{podatek}] symbol {symbol} | okno {od_p}..{do_p}")
         try:
-            lista, total = cbosa.szukaj(sesja, formularz, symbol, od, do,
+            lista, total = cbosa.szukaj(sesja, formularz, symbol, od_p, do_p,
                                         tylko_z_uzasadnieniem=True, log_fn=log)
         except cbosa.BladCBOSA as e:
             log(f"[{podatek}] BLAD wyszukiwania: {e}")
@@ -197,8 +226,13 @@ def strumien_prawomocnosc(db, sesja, formularz, log=print):
     bledy_wyszukiwania = 0
 
     for podatek, symbol in cbosa.SYMBOLE_PODATKOW.items():
+        okno = _okno_dla_podatku(od, do, podatek)
+        if okno is None:
+            log(f"\n[{podatek}] pominiety — start podatku {utils.data_start(podatek)}")
+            continue
+        od_p, do_p = okno
         try:
-            lista, total = cbosa.szukaj(sesja, formularz, symbol, od, do,
+            lista, total = cbosa.szukaj(sesja, formularz, symbol, od_p, do_p,
                                         tylko_prawomocne=True, log_fn=log)
         except cbosa.BladCBOSA as e:
             log(f"[{podatek}] BLAD wyszukiwania: {e}")

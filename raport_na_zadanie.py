@@ -24,7 +24,7 @@ Wymagane zmienne srodowiskowe:
 Parametry (argumenty CLI):
   --rok       np. 2026
   --miesiac   np. 1 (styczen) .. 12 (grudzien)
-  --podatek   PIT | CIT | VAT | AKCYZA | WSZYSTKIE
+  --podatek   PIT | CIT | VAT | AKCYZA | PCC | WSZYSTKIE
 
 Przyklad:
   python raport_na_zadanie.py --rok 2026 --miesiac 4 --podatek CIT
@@ -184,7 +184,7 @@ if __name__ == "__main__":
     parser.add_argument("--miesiac", type=int, required=True, choices=range(1, 13))
     parser.add_argument(
         "--podatek", type=str, required=True,
-        choices=["PIT", "CIT", "VAT", "AKCYZA", "WSZYSTKIE"]
+        choices=["PIT", "CIT", "VAT", "AKCYZA", "PCC", "WSZYSTKIE"]
     )
     args = parser.parse_args()
     main(rok=args.rok, miesiac=args.miesiac, podatek=args.podatek)

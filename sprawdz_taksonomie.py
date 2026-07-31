@@ -21,7 +21,7 @@ import sys
 
 import streszczacz_openrouter as sopen
 
-PODATKI = ["CIT", "VAT", "PIT", "AKCYZA"]
+PODATKI = ["CIT", "VAT", "PIT", "AKCYZA", "PCC"]
 
 
 def main() -> int:

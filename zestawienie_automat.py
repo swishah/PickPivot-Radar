@@ -43,21 +43,30 @@ import time
 import streamlit as st
 
 import archiwum_supabase
+import utils
 import pdf_zestawienie
 import streszczacz_openrouter as sopen
 from zestawienie_tygodniowe import (_pasek_sortowania, _pasek_stron,
                                     _tabela_html, _zapytaj_cache)
 
-PODATKI = ["PIT", "CIT", "VAT", "AKCYZA"]
+PODATKI = ["PIT", "CIT", "VAT", "AKCYZA", "PCC"]
 MAKS_TYGODNI = 104
 BATCH_MAKS = 15  # ile interpretacji streścić za jednym kliknięciem (limit darmowy)
 PRZERWA_S = 3.5  # odstęp między zapytaniami (limit ~20/min darmowej puli)
 
-# Automat streszcza WYŁĄCZNIE interpretacje wydane od tej daty włącznie
-# (data_wyd >= DATA_START). Przeszłe interpretacje są pomijane — start „od teraz”,
+# Próg daty wydania — interpretacje wcześniejsze są pomijane. Start „od teraz”,
 # potem wszystko na bieżąco. Format YYYY-MM-DD; porównanie łańcuchowe jest
 # poprawne, bo data_wyd jest przechowywana jako tekst ISO.
-DATA_START = "2026-07-15"
+#
+# PRÓG JEST RÓŻNY DLA RÓŻNYCH PODATKÓW. PIT/CIT/VAT/AKCYZA startują 15.07.2026,
+# PCC dopiero 03.08.2026. Dlatego zapytania wołają utils.data_start(podatek)
+# zamiast jednej stałej — inaczej zakładka PCC pokazywałaby „0 braków” za okres,
+# w którym nic jeszcze nie było zbierane, co wygląda jak działający automat,
+# a jest brakiem danych.
+#
+# Źródłem prawdy jest utils.DATY_START_PODATKU. Poniższa stała to wyłącznie
+# wartość domyślna dla miejsc bez kontekstu podatku.
+DATA_START = utils.DATA_START_DOMYSLNA
 
 # Model, pod którym zapisuje zarówno automat, jak i wtyczka przeglądarkowa.
 # Musi się zgadzać ze zmienną MODEL_ZESTAWIENIA funkcji wtyczka-zapisz
@@ -140,12 +149,12 @@ def _lista_tygodni(podatek: str) -> list[str]:
     dzis = dt.date.today()
     biezacy = _poniedzialek(dzis)
     # Nie schodzimy poniżej tygodnia progu DATA_START.
-    najstarsza = _poniedzialek(dt.date.fromisoformat(DATA_START))
+    najstarsza = _poniedzialek(dt.date.fromisoformat(utils.data_start(podatek)))
     try:
         w = _zapytaj(
             "SELECT MIN(NULLIF(data_wyd,'')) AS m FROM dokumenty "
             "WHERE podatek=%s AND data_wyd >= %s",
-            (podatek, DATA_START),
+            (podatek, utils.data_start(podatek)),
         )
         if w and w[0].get("m"):
             najstarsza = _poniedzialek(dt.date.fromisoformat(str(w[0]["m"])[:10]))
@@ -190,7 +199,7 @@ def _policz(podatek: str, model: str = "", tylko_pelne: bool = False) -> int:
     if not tylko_pelne:
         r = _zapytaj_cache(
             "SELECT COUNT(*) AS n FROM dokumenty WHERE podatek=%s AND data_wyd >= %s",
-            (podatek, DATA_START))
+            (podatek, utils.data_start(podatek)))
         return int(r[0]["n"]) if r else 0
 
     r = _zapytaj_cache(
@@ -200,7 +209,7 @@ def _policz(podatek: str, model: str = "", tylko_pelne: bool = False) -> int:
              ON s.dokument_id = d.id AND s.model = %s
            WHERE d.podatek = %s AND d.data_wyd >= %s
              AND COALESCE(s.streszczenie_pelne, '') <> ''""",
-        (model, podatek, DATA_START))
+        (model, podatek, utils.data_start(podatek)))
     return int(r[0]["n"]) if r else 0
 
 
@@ -240,7 +249,7 @@ def _wiersze(podatek: str, model: str, sort_kol: str, malejaco: bool,
         ORDER BY {kol} {kier} NULLS LAST, d.sygnatura
         LIMIT {int(limit)} OFFSET {int(offset)}
         """,
-        (model, podatek, DATA_START),
+        (model, podatek, utils.data_start(podatek)),
     )
     rows = [dict(r) for r in rows]  # kopia — nie modyfikujemy obiektu w cache
     for r in rows:
@@ -260,6 +269,51 @@ def _wiersze(podatek: str, model: str, sort_kol: str, malejaco: bool,
     return rows
 
 
+# Próg z kontroli jakości w streszczacz_openrouter. Powtórzony tutaj świadomie:
+# zapytanie SQL musi znać tę liczbę, a import stałej prywatnej wiązałby moduł
+# z wewnętrznym szczegółem tamtego pliku.
+MIN_DLUGOSC_STRESZCZENIA = getattr(sopen, "_MIN_DLUGOSC", 120)
+
+
+def _policz_brakujace(podatek: str, model: str) -> int:
+    """
+    Liczba interpretacji bez sensownego streszczenia — SAMA LICZBA, liczona
+    po stronie bazy.
+
+    DLACZEGO NIE len(_brakujace())
+      _brakujace() pobiera wiersze wszystkich dokumentów podatku od DATA_START
+      i odsiewa je w Pythonie. Do wyświetlenia jednej metryki to znaczy: cztery
+      zakładki × komplet rekordów przy każdym renderze strony. Tu leci jeden
+      integer.
+
+    CZEGO TA LICZBA NIE ŁAPIE
+      Pełna kontrola jakości (streszczenie_wadliwe) odrzuca dodatkowo etykiety
+      moderacji, odmowy modelu i odpowiedzi po angielsku — to wymaga wyrażeń
+      regularnych, więc w SQL tego nie odtwarzamy. Były to artefakty darmowych
+      modeli OpenRoutera; przy streszczeniach z ChatGPT i z wtyczki praktycznie
+      nie występują. Licznik może więc zaniżyć wynik o pojedyncze sztuki —
+      przy pełnym przebiegu streszczania (gdy wróci) i tak zostaną wyłapane.
+    """
+    r = _zapytaj_cache(
+        """
+        SELECT COUNT(*) AS n
+        FROM dokumenty d
+        LEFT JOIN streszczenia_auto s
+               ON s.dokument_id = d.id AND s.model = %s
+        WHERE d.podatek = %s AND d.data_wyd >= %s
+          AND (
+                s.streszczenie IS NULL
+             OR length(btrim(s.streszczenie)) < %s
+             OR btrim(s.streszczenie) LIKE '{%%'
+             OR s.streszczenie LIKE '%%"streszczenie"%%'
+             OR s.streszczenie LIKE '%%"temat"%%'
+          )
+        """,
+        (model, podatek, utils.data_start(podatek), MIN_DLUGOSC_STRESZCZENIA),
+    )
+    return int(r[0]["n"]) if r else 0
+
+
 def _brakujace(podatek: str, model: str) -> list[dict]:
     """Interpretacje bez sensownego streszczenia (do przycisku i licznika).
     Lekko — bez pełnych tekstów; tekst dobierany dopiero dla wsadu."""
@@ -272,7 +326,7 @@ def _brakujace(podatek: str, model: str) -> list[dict]:
         WHERE d.podatek = %s AND d.data_wyd >= %s
         ORDER BY d.data_wyd DESC
         """,
-        (model, podatek, DATA_START),
+        (model, podatek, utils.data_start(podatek)),
     )
     return [r for r in rows if not _sensowne(r.get("s_streszcz"))]
 
@@ -540,18 +594,22 @@ def _zakladka(podatek: str, model: str, klucz_api: str | None) -> None:
                     "Powstają one przy streszczaniu z wtyczki przeglądarkowej.")
         else:
             st.info("Brak interpretacji w bazie dla tego podatku "
-                    f"(od {DATA_START}).")
+                    f"(od {utils.data_start(podatek)}).")
         return
 
+    k1, k2 = st.columns(2)
+    k1.metric("Interpretacji (wszystkie)", total)
+
     if not POKAZ_STRESZCZANIE:
-        # Jedna metryka zamiast dwoch — druga wymagalaby _brakujace(), czyli
-        # skanu wszystkich dokumentow podatku przy kazdym renderze.
-        st.metric("Interpretacji (wszystkie)", total)
+        # Ta sama informacja co dawniej, ale liczona zapytaniem COUNT zamiast
+        # sciaganiem rekordow. Lista braków nie jest tu do niczego potrzebna —
+        # przycisk streszczania jest wygaszony.
         brak = []
+        k2.metric("Bez streszczenia", _policz_brakujace(podatek, model),
+                  help="Interpretacje, które czekają na streszczenie z modułu "
+                       "ChatGPT albo z wtyczki przeglądarkowej.")
     else:
         brak = _brakujace(podatek, model)
-        k1, k2 = st.columns(2)
-        k1.metric("Interpretacji (wszystkie)", total)
         k2.metric("Bez streszczenia", len(brak))
 
     if POKAZ_STRESZCZANIE and brak:
@@ -638,9 +696,17 @@ def pokaz_zestawienie_automat() -> None:
         "Interpretacje indywidualne z bazy wraz ze streszczeniami. "
         "Streszczenia powstają w module ChatGPT i we wtyczce przeglądarkowej."
     )
+    # Daty startowe różnią się między podatkami, więc podpis wymienia je
+    # wprost zamiast podawać jedną liczbę, która byłaby nieprawdziwa dla PCC.
+    _od_domysl = dt.date.fromisoformat(utils.DATA_START_DOMYSLNA)
+    _wyjatki = ", ".join(
+        f"{p} od {dt.date.fromisoformat(d):%d.%m.%Y}"
+        for p, d in sorted(utils.DATY_START_PODATKU.items())
+    )
     st.caption(
-        f"Zakres: interpretacje wydane od **{dt.date.fromisoformat(DATA_START):%d.%m.%Y}** "
-        f"włącznie (wcześniejsze są pomijane)."
+        f"Zakres: interpretacje wydane od **{_od_domysl:%d.%m.%Y}** włącznie"
+        + (f" ({_wyjatki})." if _wyjatki else ".")
+        + " Wcześniejsze są pomijane."
     )
 
     try:

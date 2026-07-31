@@ -52,7 +52,7 @@ import paleta
 import eksplorator_archiwum as _archiwum_ui
 
 
-PODATKI = ["PIT", "CIT", "VAT", "AKCYZA"]
+PODATKI = ["PIT", "CIT", "VAT", "AKCYZA", "PCC"]
 
 
 def _fonty() -> tuple[str, str, bool]:

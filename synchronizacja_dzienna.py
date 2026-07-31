@@ -7,7 +7,7 @@ o 3:00 w nocy.
 Co robi:
   1. Wyznacza ruchome okno ostatnich 10 dni (patrz OKNO_SYNCHRONIZACJI_DNI
      w raport_silnik.py).
-  2. Dla kazdego podatku (PIT, CIT, VAT, AKCYZA) sprawdza API MF dla tego
+  2. Dla kazdego podatku (PIT, CIT, VAT, AKCYZA, PCC) sprawdza API MF dla tego
      okna i dociaga do bazy WYLACZNIE nowe dokumenty (duplikaty pomijane
      automatycznie przez ON CONFLICT DO NOTHING w warstwie zapisu).
   3. Weryfikuje kompletnosc (drugie, niezalezne zapytanie do MF).
