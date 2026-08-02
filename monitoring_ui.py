@@ -11,8 +11,22 @@ Jeden moduł, trzy kanały powiadomień e-mail (zakładki):
 
 Wysyłką zajmuje się skrypt monitoring_fraz.py w GitHub Actions (wspólny
 harmonogram i SMTP dla wszystkich trzech kanałów). Ten moduł tylko zarządza
-subskrypcjami i pokazuje historię. Tabele i mechanizm bez zmian — to czysta
-konsolidacja trzech wcześniejszych modułów UI w jeden.
+subskrypcjami i pokazuje historię.
+
+ZMIANA WOBEC POPRZEDNIEJ WERSJI — ŹRÓDŁO TAKSONOMII
+    Było: `from streszczacz_openrouter import BRANZE, PRZEDMIOTY`.
+    Streszczanie przeszło na moduł ChatGPT, który klasyfikuje wyłącznie
+    z list zwracanych przez Edge Function gpt-tresci — a te pochodzą
+    z tabel taksonomia_branze / taksonomia_przedmiotow. Stałe w module
+    OpenRoutera przestały być źródłem prawdy.
+
+    Skutek starego importu był cichy i realny: użytkownik mógł zasubskrybować
+    branżę, której model już nie nadaje, i nigdy nie dostać powiadomienia —
+    a lista nie pokazywała branż dodanych do taksonomii po zamrożeniu stałych.
+    Nic się nie wysypywało, po prostu alerty nie przychodziły.
+
+    Jest: odczyt z tych samych tabel, z których czyta gpt-tresci. Jedno
+    źródło prawdy dla klasyfikatora, walidatora zapisu i tego UI.
 """
 
 from __future__ import annotations
@@ -25,10 +39,8 @@ import streamlit as st
 import archiwum_supabase
 import auth
 import monitoring_fraz as mfr
-from streszczacz_openrouter import BRANZE, PRZEDMIOTY
 
 PODATKI_FRAZY = ["(wszystkie)", "PIT", "CIT", "VAT", "AKCYZA", "PCC"]
-PODATKI_PRZEDMIOTY = list(PRZEDMIOTY.keys())
 
 
 # ---------------------------------------------------------------------------
@@ -46,6 +58,37 @@ def _wykonaj(sql: str, p: tuple | None = None) -> int:
 def _zapewnij_tabele() -> bool:
     mfr.zapewnij_tabele(archiwum_supabase._get_db())
     return True
+
+
+# ---------------------------------------------------------------------------
+# TAKSONOMIA — jedno źródło prawdy (te same tabele, co gpt-tresci)
+# ---------------------------------------------------------------------------
+@st.cache_data(ttl=3600, show_spinner=False)
+def _branze() -> list[str]:
+    """Aktywne branże, w kolejności z taksonomii.
+
+    TTL godzinny, a nie cache_resource bez wygasania: taksonomia zmienia się
+    rzadko, ale gdy już się zmieni, nikt nie będzie restartował aplikacji,
+    żeby zobaczyć nową pozycję.
+    """
+    w = _zapytaj(
+        "SELECT branza FROM taksonomia_branze WHERE aktywna ORDER BY kolejnosc"
+    )
+    return [r["branza"] for r in w]
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _przedmioty() -> dict[str, list[str]]:
+    """Aktywne przedmioty pogrupowane po podatku, w kolejności z taksonomii."""
+    w = _zapytaj(
+        "SELECT podatek, przedmiot FROM taksonomia_przedmiotow "
+        "WHERE aktywny ORDER BY podatek, kolejnosc"
+    )
+    out: dict[str, list[str]] = {}
+    for r in w:
+        out.setdefault((r["podatek"] or "").upper(), []).append(r["przedmiot"])
+    out.pop("", None)
+    return out
 
 
 def _email_poprawny(e: str) -> bool:
@@ -157,9 +200,18 @@ def _zakladka_branze() -> None:
         "Model przy streszczaniu ocenia PO TREŚCI, jakiej branży dotyczy "
         "działalność wnioskodawcy (nie po słowach kluczowych)."
     )
+
+    branze = _branze()
+    if not branze:
+        st.error(
+            "Taksonomia branż jest pusta — sprawdź tabelę `taksonomia_branze` "
+            "(kolumna `aktywna`). Bez niej nie da się dodać subskrypcji."
+        )
+        return
+
     c1, c2 = st.columns([2, 2])
     with c1:
-        branza = st.selectbox("Branża", BRANZE, key="mb_branza")
+        branza = st.selectbox("Branża", branze, key="mb_branza")
     with c2:
         email = st.text_input("E-mail do powiadomień", key="mb_email")
 
@@ -186,10 +238,18 @@ def _zakladka_branze() -> None:
     )
     if not subs:
         st.info("Brak subskrypcji.")
+
+    # Subskrypcja spoza aktualnej taksonomii nigdy nie dostanie powiadomienia —
+    # model nie ma z czego nadać takiej branży. Oznaczamy to wprost, bo inaczej
+    # objawem jest wyłącznie cisza.
+    zbior = set(branze)
     for s in subs:
         c1, c2, c3 = st.columns([3, 3, 1])
-        c1.markdown(f"**{s['branza']}**")
+        martwa = s["branza"] not in zbior
+        c1.markdown(f"**{s['branza']}**" + (" ⚠️" if martwa else ""))
         c2.markdown(f"{s['email']}")
+        if martwa:
+            c1.caption("Poza aktualną taksonomią — nie będzie trafień.")
         if c3.button("🗑️", key=f"mb_usun_{s['id']}", help="Anuluj subskrypcję"):
             _wykonaj("UPDATE obserwowane_branze SET aktywna=FALSE WHERE id=%s",
                      (s["id"],))
@@ -228,13 +288,23 @@ def _zakladka_przedmioty() -> None:
         "Obszar merytoryczny (np. estoński CIT, WHT, KSeF) nadawany przez "
         "model przy streszczaniu — taksonomia właściwa dla podatku."
     )
+
+    przedmioty = _przedmioty()
+    podatki = sorted(przedmioty.keys())
+    if not podatki:
+        st.error(
+            "Taksonomia przedmiotów jest pusta — sprawdź tabelę "
+            "`taksonomia_przedmiotow` (kolumna `aktywny`)."
+        )
+        return
+
     c1, c2, c3 = st.columns([1, 3, 2])
     with c1:
-        podatek = st.selectbox("Podatek", PODATKI_PRZEDMIOTY, key="mp_podatek")
+        podatek = st.selectbox("Podatek", podatki, key="mp_podatek")
     with c2:
         przedmiot = st.selectbox(
             "Przedmiot (obszar merytoryczny)",
-            PRZEDMIOTY[podatek],
+            przedmioty[podatek],
             key=f"mp_przedmiot_{podatek}",
         )
     with c3:
@@ -263,11 +333,16 @@ def _zakladka_przedmioty() -> None:
     )
     if not subs:
         st.info("Brak subskrypcji.")
+
+    wszystkie_przedmioty = {p for lista in przedmioty.values() for p in lista}
     for s in subs:
         c1, c2, c3, c4 = st.columns([3, 1, 3, 1])
-        c1.markdown(f"**{s['przedmiot']}**")
+        martwy = s["przedmiot"] not in wszystkie_przedmioty
+        c1.markdown(f"**{s['przedmiot']}**" + (" ⚠️" if martwy else ""))
         c2.markdown(f"`{s['podatek']}`")
         c3.markdown(f"{s['email']}")
+        if martwy:
+            c1.caption("Poza aktualną taksonomią — nie będzie trafień.")
         if c4.button("🗑️", key=f"mp_usun_{s['id']}", help="Anuluj subskrypcję"):
             _wykonaj("UPDATE obserwowane_przedmioty SET aktywna=FALSE WHERE id=%s",
                      (s["id"],))
