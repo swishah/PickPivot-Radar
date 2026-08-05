@@ -14,32 +14,76 @@ Co robi przy każdym uruchomieniu:
   4. Grupuje nowe trafienia per adres e-mail i wysyła JEDEN zbiorczy mail
      na adres, po czym zapisuje pary jako wysłane.
 
+POSTAĆ WIADOMOŚCI
+  Układ BLOKOWY — bez tabeli. Grupowanie po frazie/branży/przedmiocie, pod nim
+  kolejne interpretacje: sygnatura z linkiem, temat, klasyfikacja, streszczenie.
+  Streszczenie zajmuje pełną szerokość wiadomości.
+
+  Mail idzie jako multipart/alternative — DWIE wersje tej samej treści:
+    • text/plain — nagłówki sekcji WERSALIKAMI (fallback),
+    • text/html  — nagłówki sekcji pogrubione, w kolorze marki.
+
+  ŹRÓDŁO STRESZCZENIA
+    Podstawą jest `streszczenie_pelne` — układ sekcyjny zapisywany przez
+    GPT „Skaner Doradca — streszczanie zbiorcze” przez Edge Function
+    wtyczka-zapisz. Sekcje: Podatek i temat, Opis stanu faktycznego, Pytania,
+    Stanowisko podatnika, Stanowisko organu, Podstawy prawne.
+
+    SEKCJA „PODSTAWY PRAWNE” JEST W MAILU POMIJANA — decyzja świadoma,
+    wiadomość ma być czytana w skrzynce, a wykaz przepisów wydłuża ją bez
+    korzyści. Pełny układ z przepisami zostaje dostępny w aplikacji i wtyczce.
+
+    Gdy `streszczenie_pelne` jest puste (pole opcjonalne w schemacie
+    wtyczka-zapisz — ok. 20% wpisów go nie ma), mail pokazuje zwięzłą prozę
+    z kolumny `streszczenie` i zaznacza, że to wersja skrócona.
+
+EGRESS
+  Zapytania dobierają wyłącznie kolumny potrzebne do maila. Pełny tekst
+  dokumentu (dokumenty.tekst) NIE jest pobierany — ILIKE liczy się po stronie
+  bazy. Żadnych wywołań modelu: skrypt czyta gotowe streszczenia.
+
+UWAGA — KLASYFIKACJA
+  Wpisy z pustą kolumną `branze` albo `przedmiot` są NIEWIDOCZNE dla kanałów
+  branżowego i przedmiotowego (złączenie ILIKE ich nie łapie). To nie jest
+  usterka tego skryptu, tylko brak danych — patrz tryb `zakres` akcji
+  doStreszczenia. Kanał fraz działa niezależnie od klasyfikacji.
+
 Zmienne środowiskowe (GitHub Secrets):
-  SUPABASE_DB_URL lub SUPABASE_HOST/USER/PASSWORD[/PORT/DB]  — jak w automacie
-  SMTP_HOST      — np. smtp.gmail.com
-  SMTP_PORT      — np. 587 (STARTTLS)
-  SMTP_USER      — login SMTP (np. adres Gmail)
-  SMTP_PASSWORD  — hasło SMTP (dla Gmaila: HASŁO APLIKACJI, nie zwykłe)
-  SMTP_FROM      — opcjonalnie nadawca (domyślnie SMTP_USER)
+  SUPABASE_DB_URL lub SUPABASE_HOST/USER/PASSWORD[/PORT/DB]
+  SMTP_HOST / SMTP_PORT / SMTP_USER / SMTP_PASSWORD / SMTP_FROM
 Opcjonalne:
   MONITORING_OKNO_DNI — ile dni wstecz po pobrano_at (domyślnie 3)
+  STRESZCZ_DATA_START — próg zakresu streszczania (domyślnie 2026-07-15)
 """
 
 from __future__ import annotations
 
+import datetime as dt
+import html
 import os
+import re
 import smtplib
 import sys
+from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import formataddr
 
 import db_core
 
 OKNO_DNI = int(os.environ.get("MONITORING_OKNO_DNI") or "3")
-# Próg zakresu streszczania — spójny z automatem (streszczanie_auto.py).
-# Interpretacje wydane wcześniej nigdy nie są streszczane, więc alertów fraz
-# dla nich nie wstrzymujemy.
+# Próg zakresu streszczania. Interpretacje wydane wcześniej nie są streszczane,
+# więc alertów fraz dla nich nie wstrzymujemy.
 DATA_START_STRESZCZ = os.environ.get("STRESZCZ_DATA_START") or "2026-07-15"
+
+# Kolory zaszyte na sztywno, BEZ importu paleta.py — ten skrypt chodzi
+# w GitHub Actions bez Streamlita, a paleta.py go wymaga.
+ZIELEN = "#386520"
+TXT = "#111111"
+TXT2 = "#555555"
+
+# Nagłówki sekcji pomijane w mailu. Porównanie po zdjęciu znaczników markdown
+# i sprowadzeniu do małych liter.
+SEKCJE_POMIJANE = ("podstawy prawne",)
 
 
 # ---------------------------------------------------------------------------
@@ -122,10 +166,7 @@ def zapewnij_tabele(db: db_core.SupabaseDB) -> None:
         )
         """
     )
-    # Właściciel subskrypcji (konto twórcy) — dokładany bezpiecznie; istniejące
-    # subskrypcje bez właściciela przypisujemy do konta administracyjnego DORADCA,
-    # żeby ich nie osierocić. Metadana dla UI (filtr „moje/wszystkie”) — skrypt
-    # wysyłkowy jej nie używa.
+    # Właściciel subskrypcji — metadana dla UI; skrypt wysyłkowy jej nie używa.
     for _tab in ("obserwowane_frazy", "obserwowane_branze", "obserwowane_przedmioty"):
         db.wykonaj(
             f"ALTER TABLE {_tab} ADD COLUMN IF NOT EXISTS wlasciciel TEXT DEFAULT ''")
@@ -144,18 +185,30 @@ def zapewnij_tabele(db: db_core.SupabaseDB) -> None:
         )
         """
     )
+    # Kolumny czytane przez maile — dokładane defensywnie, żeby skrypt nie padł
+    # na bazie, w której moduł 6 jeszcze się nie uruchomił.
+    db.wykonaj(
+        "ALTER TABLE streszczenia_auto ADD COLUMN IF NOT EXISTS "
+        "streszczenie_pelne TEXT DEFAULT ''")
+    db.wykonaj(
+        "ALTER TABLE streszczenia_auto ADD COLUMN IF NOT EXISTS "
+        "zrodlo TEXT DEFAULT ''")
 
 
+# ---------------------------------------------------------------------------
+# ZAPYTANIA
 # ---------------------------------------------------------------------------
 def _trafienia(db: db_core.SupabaseDB) -> list[dict]:
     """Nowe pary (fraza, dokument): dopasowane, jeszcze nie wysłane."""
     return db.wykonaj(
         f"""
         SELECT f.id AS fraza_id, f.fraza, f.email, f.podatek AS fraza_podatek,
-               d.id AS dokument_id, d.podatek, d.sygnatura, d.data_wyd, d.link,
+               d.id AS dokument_id, d.podatek, d.sygnatura, d.data_wyd,
+               d.pobrano_at, d.link,
                s.temat, s.streszczenie,
                COALESCE(s.branze, '') AS branze,
-               COALESCE(s.przedmiot, '') AS przedmiot
+               COALESCE(s.przedmiot, '') AS przedmiot,
+               COALESCE(s.streszczenie_pelne, '') AS streszczenie_pelne
         FROM obserwowane_frazy f
         JOIN dokumenty d
           ON (f.podatek = '' OR f.podatek = d.podatek)
@@ -174,7 +227,6 @@ def _trafienia(db: db_core.SupabaseDB) -> list[dict]:
 
 
 def _oznacz_wyslane(db: db_core.SupabaseDB, pary: list[dict]) -> None:
-    import datetime as dt
     teraz = dt.datetime.now().isoformat(timespec="seconds")
     for p in pary:
         db.wykonaj(
@@ -184,94 +236,21 @@ def _oznacz_wyslane(db: db_core.SupabaseDB, pary: list[dict]) -> None:
         )
 
 
-# ---------------------------------------------------------------------------
-# ---------------------------------------------------------------------------
-def _blok_streszczenia(t: dict) -> list[str]:
-    """Wspólny fragment maila: temat, branża, przedmiot i streszczenie
-    (gdy dostępne). Dla fraz streszczenie może jeszcze nie istnieć —
-    wtedy adnotacja zamiast pustego miejsca."""
-    linie = []
-    if t.get("temat"):
-        linie.append(f"     Temat: {t['temat']}")
-    kl = []
-    if t.get("branze"):
-        kl.append(f"branża: {t['branze']}")
-    if t.get("przedmiot"):
-        kl.append(f"przedmiot: {t['przedmiot']}")
-    if kl:
-        linie.append("     (" + "; ".join(kl) + ")")
-    streszcz = (t.get("streszczenie") or "").strip()
-    if streszcz:
-        linie.append("     Streszczenie:")
-        linie.append(f"       {streszcz}")
-    else:
-        linie.append("     Streszczenie: jeszcze niegotowe — pojawi się po "
-                     "najbliższym przebiegu automatu streszczeń.")
-    return linie
-
-
-def _tresc_maila(trafienia: list[dict]) -> str:
-    linie = ["Nowe interpretacje pasujące do obserwowanych fraz",
-             "(Skaner Doradca — monitoring fraz)", ""]
-    wg_frazy: dict[str, list[dict]] = {}
-    for t in trafienia:
-        wg_frazy.setdefault(t["fraza"], []).append(t)
-    for fraza, lista in wg_frazy.items():
-        linie.append(f"■ Fraza: „{fraza}” — trafień: {len(lista)}")
-        for t in lista:
-            data = str(t["data_wyd"])[:10]
-            linie.append(f"   • [{t['podatek']}] {t['sygnatura']} "
-                         f"(wydana {data})")
-            if t.get("link"):
-                linie.append(f"     {t['link']}")
-            linie.extend(_blok_streszczenia(t))
-            linie.append("")
-        linie.append("")
-    linie.append("— Wiadomość wygenerowana automatycznie. Frazy zarządzasz "
-                 "w aplikacji, moduł „Monitoring Fraz”.")
-    return "\n".join(linie)
-
-
-def _wyslij_temat(adres: str, tresc: str, temat: str) -> None:
-    host = os.environ.get("SMTP_HOST")
-    port = int(os.environ.get("SMTP_PORT") or "587")
-    user = os.environ.get("SMTP_USER")
-    haslo = os.environ.get("SMTP_PASSWORD")
-    if not (host and user and haslo):
-        raise SystemExit("Brak konfiguracji SMTP (SMTP_HOST/SMTP_USER/SMTP_PASSWORD).")
-    nadawca = os.environ.get("SMTP_FROM") or user
-
-    msg = MIMEText(tresc, "plain", "utf-8")
-    msg["Subject"] = temat
-    msg["From"] = formataddr(("Skaner Doradca", nadawca))
-    msg["To"] = adres
-
-    with smtplib.SMTP(host, port, timeout=30) as s:
-        s.starttls()
-        s.login(user, haslo)
-        s.sendmail(nadawca, [adres], msg.as_string())
-
-
-def _wyslij(adres: str, tresc: str, ile: int) -> None:
-    _wyslij_temat(adres, tresc,
-                  f"[Skaner Doradca] Monitoring fraz: {ile} nowych trafień")
-
-
 def _trafienia_branz(db: db_core.SupabaseDB) -> list[dict]:
     """Nowe pary (subskrypcja branży, dokument): streszczenie z ostatnich
     OKNO_DNI dni ma przypisaną obserwowaną branżę, a powiadomienia jeszcze
-    nie wysłano. Branże nadaje model podczas streszczania (klasyfikacja po
-    treści, zamknięta taksonomia)."""
-    import datetime as dt
+    nie wysłano."""
     prog = (dt.datetime.now() - dt.timedelta(days=OKNO_DNI)).isoformat(
         timespec="seconds")
     return db.wykonaj(
         """
         SELECT b.id AS sub_id, b.branza, b.email,
-               d.id AS dokument_id, d.podatek, d.sygnatura, d.data_wyd, d.link,
+               d.id AS dokument_id, d.podatek, d.sygnatura, d.data_wyd,
+               d.pobrano_at, d.link,
                s.temat, s.streszczenie,
                COALESCE(s.branze, '') AS branze,
-               COALESCE(s.przedmiot, '') AS przedmiot
+               COALESCE(s.przedmiot, '') AS przedmiot,
+               COALESCE(s.streszczenie_pelne, '') AS streszczenie_pelne
         FROM obserwowane_branze b
         JOIN streszczenia_auto s
           ON s.branze ILIKE '%%' || b.branza || '%%'
@@ -289,7 +268,6 @@ def _trafienia_branz(db: db_core.SupabaseDB) -> list[dict]:
 
 
 def _oznacz_wyslane_branze(db: db_core.SupabaseDB, pary: list[dict]) -> None:
-    import datetime as dt
     teraz = dt.datetime.now().isoformat(timespec="seconds")
     for p in pary:
         db.wykonaj(
@@ -299,44 +277,25 @@ def _oznacz_wyslane_branze(db: db_core.SupabaseDB, pary: list[dict]) -> None:
         )
 
 
-def _tresc_maila_branze(trafienia: list[dict]) -> str:
-    linie = ["Nowe interpretacje z obserwowanych branż",
-             "(Skaner Doradca — monitoring branż; klasyfikacja po treści "
-             "interpretacji, nadawana automatycznie przy streszczaniu)", ""]
-    wg: dict[str, list[dict]] = {}
-    for t in trafienia:
-        wg.setdefault(t["branza"], []).append(t)
-    for branza, lista in wg.items():
-        linie.append(f"■ Branża: {branza} — trafień: {len(lista)}")
-        for t in lista:
-            data = str(t["data_wyd"])[:10]
-            linie.append(f"   • [{t['podatek']}] {t['sygnatura']} (wydana {data})")
-            if t.get("link"):
-                linie.append(f"     {t['link']}")
-            linie.extend(_blok_streszczenia(t))
-            linie.append("")
-        linie.append("")
-    linie.append("— Wiadomość wygenerowana automatycznie. Branże zarządzasz "
-                 "w aplikacji, moduł „Monitoring Branż”.")
-    return "\n".join(linie)
-
-
-
 def _trafienia_przedmiotow(db: db_core.SupabaseDB) -> list[dict]:
-    """Nowe pary (subskrypcja przedmiotu, dokument): świeże streszczenie ma
-    przypisany obserwowany przedmiot (obszar merytoryczny), a powiadomienia
-    jeszcze nie wysłano. Przedmiot nadaje model przy streszczaniu (zamknięta
-    taksonomia per podatek)."""
-    import datetime as dt
+    """Nowe pary (subskrypcja przedmiotu, dokument).
+
+    UWAGA: przedmiot SUBSKRYPCJI wychodzi jako `sub_przedmiot`, przedmiot
+    przypisany DOKUMENTOWI jako `przedmiot`. We wcześniejszej wersji oba
+    nazywały się tak samo i jeden nadpisywał drugi.
+    """
     prog = (dt.datetime.now() - dt.timedelta(days=OKNO_DNI)).isoformat(
         timespec="seconds")
     return db.wykonaj(
         """
-        SELECT p.id AS sub_id, p.przedmiot, p.podatek AS sub_podatek, p.email,
-               d.id AS dokument_id, d.podatek, d.sygnatura, d.data_wyd, d.link,
+        SELECT p.id AS sub_id, p.przedmiot AS sub_przedmiot,
+               p.podatek AS sub_podatek, p.email,
+               d.id AS dokument_id, d.podatek, d.sygnatura, d.data_wyd,
+               d.pobrano_at, d.link,
                s.temat, s.streszczenie,
                COALESCE(s.branze, '') AS branze,
-               COALESCE(s.przedmiot, '') AS przedmiot
+               COALESCE(s.przedmiot, '') AS przedmiot,
+               COALESCE(s.streszczenie_pelne, '') AS streszczenie_pelne
         FROM obserwowane_przedmioty p
         JOIN streszczenia_auto s
           ON s.przedmiot ILIKE '%%' || p.przedmiot || '%%'
@@ -354,7 +313,6 @@ def _trafienia_przedmiotow(db: db_core.SupabaseDB) -> list[dict]:
 
 
 def _oznacz_wyslane_przedmioty(db: db_core.SupabaseDB, pary: list[dict]) -> None:
-    import datetime as dt
     teraz = dt.datetime.now().isoformat(timespec="seconds")
     for p in pary:
         db.wykonaj(
@@ -364,26 +322,306 @@ def _oznacz_wyslane_przedmioty(db: db_core.SupabaseDB, pary: list[dict]) -> None
         )
 
 
-def _tresc_maila_przedmioty(trafienia: list[dict]) -> str:
-    linie = ["Nowe interpretacje z obserwowanych obszarów (przedmiotów)",
-             "(Skaner Doradca — monitoring przedmiotów; obszar merytoryczny "
-             "nadawany automatycznie przy streszczaniu)", ""]
+# ---------------------------------------------------------------------------
+# ROZBIÓR PEŁNEGO STRESZCZENIA NA SEKCJE
+# ---------------------------------------------------------------------------
+# Nagłówek sekcji rozpoznajemy DWOMA drogami, bo znaczniki markdown bywają
+# gubione po drodze (zależnie od tego, czy GPT je wysłał i czy przetrwały
+# zapis). Poleganie wyłącznie na gwiazdkach oznaczałoby, że przy wpisie bez
+# nich nie rozpoznamy ANI JEDNEJ sekcji — całość poszłaby jednym blokiem,
+# a sekcja pomijana by się nie wycięła.
+#
+#   1) linia w całości ujęta w ** ** (albo * *), opcjonalny dwukropek,
+#   2) linia o treści zgodnej z nazwą znanej sekcji — niezależnie od gwiazdek.
+_RE_NAGLOWEK_MD = re.compile(r"^\s*\*{1,2}\s*([^*]+?)\s*\*{1,2}\s*:?\s*$")
+_RE_POGRUBIENIE = re.compile(r"\*\*(.+?)\*\*")
+
+# Nazwy sekcji z instrukcji GPT „Skaner Doradca — streszczanie zbiorcze”.
+# Porównanie po sprowadzeniu do małych liter i zdjęciu gwiazdek/dwukropka.
+NAZWY_SEKCJI = (
+    "podatek i temat",
+    "opis stanu faktycznego",
+    "pytania",
+    "stanowisko podatnika",
+    "stanowisko organu",
+    "podstawy prawne",
+)
+
+
+def _jako_naglowek(linia: str) -> str | None:
+    """Zwraca nazwę sekcji, jeśli linia jest jej nagłówkiem — inaczej None."""
+    goly = linia.strip().strip("*").strip().rstrip(":").strip()
+    if not goly or len(goly) > 60:
+        return None
+    if goly.lower() in NAZWY_SEKCJI:
+        return goly
+    m = _RE_NAGLOWEK_MD.match(linia)
+    if m:
+        return m.group(1).strip().rstrip(":").strip()
+    return None
+
+
+def _sekcje(pelne: str) -> list[tuple[str, list[str]]]:
+    """Rozbija pełne streszczenie na [(nagłówek, linie treści)].
+
+    Sekcje z SEKCJE_POMIJANE są odrzucane. Tekst przed pierwszym nagłówkiem
+    (gdyby model go dokleił) trafia do sekcji o pustym nagłówku, żeby nic
+    nie zginęło po cichu.
+    """
+    sekcje: list[tuple[str, list[str]]] = []
+    stan = {"naglowek": "", "linie": []}
+
+    def domknij() -> None:
+        naglowek = stan["naglowek"]
+        linie = [l for l in stan["linie"] if l.strip()]
+        if naglowek or linie:
+            if naglowek.strip().lower() not in SEKCJE_POMIJANE:
+                sekcje.append((naglowek, linie))
+
+    for linia in (pelne or "").split("\n"):
+        nazwa = _jako_naglowek(linia)
+        if nazwa:
+            domknij()
+            stan["naglowek"] = nazwa
+            stan["linie"] = []
+        else:
+            stan["linie"].append(linia.rstrip())
+    domknij()
+    return sekcje
+
+
+def _inline_html(tekst: str) -> str:
+    """Escape + zamiana **pogrubień** na <strong>. Kolejność jest istotna:
+    najpierw escape (żeby treść nie wstrzyknęła HTML-a), potem znaczniki."""
+    return _RE_POGRUBIENIE.sub(r"<strong>\1</strong>", html.escape(tekst))
+
+
+def _inline_tekst(tekst: str) -> str:
+    """Wersja tekstowa: gwiazdki pogrubienia po prostu znikają."""
+    return _RE_POGRUBIENIE.sub(r"\1", tekst)
+
+
+def _fmt_data(iso) -> str:
+    s = str(iso or "")[:10]
+    if not s:
+        return "—"
+    try:
+        return dt.date.fromisoformat(s).strftime("%d.%m.%Y")
+    except Exception:
+        return s
+
+
+# ---------------------------------------------------------------------------
+# BLOK JEDNEJ INTERPRETACJI — HTML
+# ---------------------------------------------------------------------------
+_STYL_NAGL_SEKCJI = (f"margin:10px 0 3px 0;font-size:12px;font-weight:700;"
+                     f"color:{ZIELEN};text-transform:uppercase;"
+                     f"letter-spacing:.4px;")
+_STYL_AKAPIT = "margin:0 0 5px 0;font-size:14px;line-height:1.55;"
+
+
+def _blok_html(t: dict) -> str:
+    sygn = html.escape((t.get("sygnatura") or "").strip())
+    link = (t.get("link") or "").strip()
+    naglowek_sygn = (
+        f"<a href='{html.escape(link, quote=True)}' "
+        f"style='color:{ZIELEN};text-decoration:none;'>{sygn}</a>"
+        if link else sygn
+    )
+
+    czesci = [
+        f"<p style='margin:0 0 2px 0;font-size:14px;'>"
+        f"<strong>[{html.escape(str(t.get('podatek') or ''))}]</strong> "
+        f"{naglowek_sygn}"
+        f"<span style='color:{TXT2};font-size:12px;'> · wydana "
+        f"{_fmt_data(t.get('data_wyd'))} · opublikowana "
+        f"{_fmt_data(t.get('pobrano_at'))}</span></p>"
+    ]
+
+    temat = (t.get("temat") or "").strip()
+    if temat:
+        czesci.append(
+            f"<p style='margin:0 0 2px 0;font-size:14px;'>"
+            f"<strong>Temat:</strong> {html.escape(temat)}</p>")
+
+    kl = []
+    if (t.get("branze") or "").strip():
+        kl.append(f"branża: {t['branze'].strip()}")
+    if (t.get("przedmiot") or "").strip():
+        kl.append(f"przedmiot: {t['przedmiot'].strip()}")
+    if kl:
+        czesci.append(
+            f"<p style='margin:0 0 8px 0;font-size:12px;color:{TXT2};'>"
+            f"({html.escape('; '.join(kl))})</p>")
+
+    pelne = (t.get("streszczenie_pelne") or "").strip()
+    sekcje = _sekcje(pelne) if pelne else []
+
+    if sekcje:
+        for naglowek, linie in sekcje:
+            if naglowek:
+                czesci.append(f"<p style='{_STYL_NAGL_SEKCJI}'>"
+                              f"{html.escape(naglowek)}</p>")
+            for l in linie:
+                czesci.append(f"<p style='{_STYL_AKAPIT}'>"
+                              f"{_inline_html(l.strip())}</p>")
+    else:
+        proza = (t.get("streszczenie") or "").strip()
+        if proza:
+            czesci.append(f"<p style='{_STYL_NAGL_SEKCJI}'>"
+                          f"Streszczenie (wersja skrócona)</p>")
+            czesci.append(f"<p style='{_STYL_AKAPIT}'>{html.escape(proza)}</p>")
+        else:
+            czesci.append(
+                f"<p style='margin:10px 0 5px 0;font-size:13px;color:{TXT2};'>"
+                f"Streszczenie jeszcze niegotowe.</p>")
+
+    return (f"<div style='margin:0 0 22px 0;padding:0 0 0 14px;"
+            f"border-left:3px solid {ZIELEN};'>" + "".join(czesci) + "</div>")
+
+
+def _html_maila(trafienia: list[dict], klucz: str, tytul: str,
+                etykieta_grupy: str, stopka: str) -> str:
     wg: dict[str, list[dict]] = {}
     for t in trafienia:
-        wg.setdefault(t["przedmiot"], []).append(t)
-    for przedmiot, lista in wg.items():
-        linie.append(f"■ Przedmiot: {przedmiot} — trafień: {len(lista)}")
+        wg.setdefault(t[klucz], []).append(t)
+
+    sekcje = []
+    for nazwa, lista in wg.items():
+        sekcje.append(
+            f"<h3 style='color:{ZIELEN};font-size:15px;margin:26px 0 10px 0;"
+            f"padding-bottom:4px;border-bottom:2px solid {ZIELEN};'>"
+            f"{etykieta_grupy}: {html.escape(str(nazwa))} — trafień: {len(lista)}"
+            f"</h3>" + "".join(_blok_html(t) for t in lista)
+        )
+
+    return (
+        f"<html><body style='font-family:Arial,Helvetica,sans-serif;"
+        f"color:{TXT};margin:0;padding:16px;max-width:820px;'>"
+        f"<h2 style='color:{ZIELEN};font-size:18px;margin:0 0 2px 0;'>{tytul}</h2>"
+        f"<p style='color:{TXT2};font-size:12px;margin:0;'>"
+        f"Skaner Doradca — powiadomienie automatyczne</p>"
+        + "".join(sekcje) +
+        f"<p style='color:{TXT2};font-size:11px;margin-top:26px;'>{stopka}</p>"
+        f"</body></html>"
+    )
+
+
+# ---------------------------------------------------------------------------
+# BLOK JEDNEJ INTERPRETACJI — TEKST (fallback multipart/alternative)
+# ---------------------------------------------------------------------------
+def _blok_streszczenia(t: dict) -> list[str]:
+    linie = []
+    if t.get("temat"):
+        linie.append(f"     Temat: {t['temat']}")
+    kl = []
+    if (t.get("branze") or "").strip():
+        kl.append(f"branża: {t['branze'].strip()}")
+    if (t.get("przedmiot") or "").strip():
+        kl.append(f"przedmiot: {t['przedmiot'].strip()}")
+    if kl:
+        linie.append("     (" + "; ".join(kl) + ")")
+
+    pelne = (t.get("streszczenie_pelne") or "").strip()
+    sekcje = _sekcje(pelne) if pelne else []
+    if sekcje:
+        for naglowek, tresc in sekcje:
+            linie.append("")
+            if naglowek:
+                linie.append(f"     {naglowek.upper()}")
+            for l in tresc:
+                linie.append(f"       {_inline_tekst(l).strip()}")
+    else:
+        proza = (t.get("streszczenie") or "").strip()
+        if proza:
+            linie.append("     STRESZCZENIE (WERSJA SKRÓCONA)")
+            linie.append(f"       {proza}")
+        else:
+            linie.append("     Streszczenie jeszcze niegotowe.")
+    return linie
+
+
+def _naglowek_pozycji(t: dict) -> list[str]:
+    linie = [f"   • [{t['podatek']}] {t['sygnatura']} "
+             f"(wydana {str(t['data_wyd'])[:10]})"]
+    if t.get("link"):
+        linie.append(f"     {t['link']}")
+    return linie
+
+
+def _tekst_maila(trafienia: list[dict], klucz: str, tytul: str,
+                 etykieta_grupy: str, stopka: str) -> str:
+    linie = [tytul, "(Skaner Doradca — powiadomienie automatyczne)", ""]
+    wg: dict[str, list[dict]] = {}
+    for t in trafienia:
+        wg.setdefault(t[klucz], []).append(t)
+    for nazwa, lista in wg.items():
+        linie.append(f"■ {etykieta_grupy}: {nazwa} — trafień: {len(lista)}")
         for t in lista:
-            data = str(t["data_wyd"])[:10]
-            linie.append(f"   • [{t['podatek']}] {t['sygnatura']} (wydana {data})")
-            if t.get("link"):
-                linie.append(f"     {t['link']}")
+            linie.extend(_naglowek_pozycji(t))
             linie.extend(_blok_streszczenia(t))
             linie.append("")
         linie.append("")
-    linie.append("— Wiadomość wygenerowana automatycznie. Obszary zarządzasz "
-                 "w aplikacji, moduł „Monitoring Przedmiotów”.")
+    linie.append("— " + stopka)
     return "\n".join(linie)
+
+
+# ---------------------------------------------------------------------------
+# WYSYŁKA
+# ---------------------------------------------------------------------------
+def _wyslij_temat(adres: str, tresc: str, temat: str,
+                  tresc_html: str | None = None) -> None:
+    host = os.environ.get("SMTP_HOST")
+    port = int(os.environ.get("SMTP_PORT") or "587")
+    user = os.environ.get("SMTP_USER")
+    haslo = os.environ.get("SMTP_PASSWORD")
+    if not (host and user and haslo):
+        raise SystemExit("Brak konfiguracji SMTP (SMTP_HOST/SMTP_USER/SMTP_PASSWORD).")
+    nadawca = os.environ.get("SMTP_FROM") or user
+
+    if tresc_html:
+        msg = MIMEMultipart("alternative")
+        # Kolejność ma znaczenie: wersja preferowana idzie OSTATNIA.
+        msg.attach(MIMEText(tresc, "plain", "utf-8"))
+        msg.attach(MIMEText(tresc_html, "html", "utf-8"))
+    else:
+        msg = MIMEText(tresc, "plain", "utf-8")
+
+    msg["Subject"] = temat
+    msg["From"] = formataddr(("Skaner Doradca", nadawca))
+    msg["To"] = adres
+
+    with smtplib.SMTP(host, port, timeout=30) as s:
+        s.starttls()
+        s.login(user, haslo)
+        s.sendmail(nadawca, [adres], msg.as_string())
+
+
+# ---------------------------------------------------------------------------
+# OBSŁUGA JEDNEGO KANAŁU
+# ---------------------------------------------------------------------------
+def _obsluz_kanal(db, trafienia: list[dict], klucz: str, tytul: str,
+                  etykieta: str, temat_wzor: str, stopka: str,
+                  oznacz, nazwa_logu: str) -> None:
+    """Grupowanie per adres, wysyłka i oznaczenie. Wspólne dla trzech kanałów —
+    wcześniej ten sam blok był powielony trzy razy."""
+    wg_adresu: dict[str, list[dict]] = {}
+    for t in trafienia:
+        wg_adresu.setdefault(t["email"].strip(), []).append(t)
+    for adres, lista in wg_adresu.items():
+        try:
+            _wyslij_temat(
+                adres,
+                _tekst_maila(lista, klucz, tytul, etykieta, stopka),
+                temat_wzor.format(ile=len(lista)),
+                _html_maila(lista, klucz, tytul, etykieta, stopka),
+            )
+            oznacz(db, lista)
+            print(f"[monitoring] {nazwa_logu} → {adres}: {len(lista)} trafień.")
+        except SystemExit:
+            raise
+        except Exception as e:
+            print(f"[monitoring] BŁĄD wysyłki ({nazwa_logu}) na {adres}: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -393,13 +631,9 @@ def main() -> int:
 
     # ── kanał 1: frazy ──────────────────────────────────────────────────────
     trafienia = _trafienia(db)
-    # Wstrzymanie: jeśli interpretacja jest w zakresie streszczania
-    # (data_wyd >= STRESZCZ_DATA_START), a streszczenie jeszcze nie powstało —
-    # NIE wysyłamy i NIE oznaczamy jako wysłane. Dzięki łańcuchowi workflow
-    # (synchronizacja → streszczanie → monitoring) streszczenie zwykle już jest;
-    # gdyby jednak automat trafił na limit, alert dośle się w kolejnym cyklu —
-    # już ze streszczeniem. Interpretacje spoza zakresu (starsze, których automat
-    # nigdy nie streści) wysyłamy od razu, bez czekania w nieskończoność.
+    # Wstrzymanie: interpretacja w zakresie streszczania (data_wyd >= progu)
+    # bez streszczenia NIE jest wysyłana ani oznaczana — doślemy ją, gdy
+    # streszczenie powstanie. Interpretacje spoza zakresu idą od razu.
     gotowe, wstrzymane = [], 0
     for t in trafienia:
         ma_streszcz = bool((t.get("streszczenie") or "").strip())
@@ -411,52 +645,35 @@ def main() -> int:
     trafienia = gotowe
     print(f"[monitoring] Frazy | okno: {OKNO_DNI} dni | do wysłania: {len(trafienia)}"
           + (f" | wstrzymano do streszczenia: {wstrzymane}" if wstrzymane else ""))
-    wg_adresu: dict[str, list[dict]] = {}
-    for t in trafienia:
-        wg_adresu.setdefault(t["email"].strip(), []).append(t)
-    for adres, lista in wg_adresu.items():
-        try:
-            _wyslij(adres, _tresc_maila(lista), len(lista))
-            _oznacz_wyslane(db, lista)
-            print(f"[monitoring] Frazy → {adres}: {len(lista)} trafień.")
-        except SystemExit:
-            raise
-        except Exception as e:
-            print(f"[monitoring] BŁĄD wysyłki (frazy) na {adres}: {e}")
+    _obsluz_kanal(
+        db, trafienia, "fraza",
+        "Nowe interpretacje pasujące do obserwowanych fraz", "Fraza",
+        "[Skaner Doradca] Monitoring fraz: {ile} nowych trafień",
+        "Wiadomość wygenerowana automatycznie. Frazy zarządzasz w aplikacji, "
+        "moduł „Monitoring Fraz”.",
+        _oznacz_wyslane, "Frazy")
 
-    # ── kanał 2: branże (klasyfikacja modelu przy streszczaniu) ────────────
+    # ── kanał 2: branże ─────────────────────────────────────────────────────
     tr_b = _trafienia_branz(db)
     print(f"[monitoring] Branże | nowych trafień: {len(tr_b)}")
-    wg_adresu_b: dict[str, list[dict]] = {}
-    for t in tr_b:
-        wg_adresu_b.setdefault(t["email"].strip(), []).append(t)
-    for adres, lista in wg_adresu_b.items():
-        try:
-            _wyslij_temat(adres, _tresc_maila_branze(lista),
-                          f"[Skaner Doradca] Monitoring branż: {len(lista)} nowych trafień")
-            _oznacz_wyslane_branze(db, lista)
-            print(f"[monitoring] Branże → {adres}: {len(lista)} trafień.")
-        except SystemExit:
-            raise
-        except Exception as e:
-            print(f"[monitoring] BŁĄD wysyłki (branże) na {adres}: {e}")
+    _obsluz_kanal(
+        db, tr_b, "branza",
+        "Nowe interpretacje z obserwowanych branż", "Branża",
+        "[Skaner Doradca] Monitoring branż: {ile} nowych trafień",
+        "Wiadomość wygenerowana automatycznie. Branże zarządzasz w aplikacji, "
+        "moduł „Monitoring Branż”.",
+        _oznacz_wyslane_branze, "Branże")
 
-    # ── kanał 3: przedmioty (obszar merytoryczny nadawany przy streszczaniu) ─
+    # ── kanał 3: przedmioty ─────────────────────────────────────────────────
     tr_p = _trafienia_przedmiotow(db)
     print(f"[monitoring] Przedmioty | nowych trafień: {len(tr_p)}")
-    wg_adresu_p: dict[str, list[dict]] = {}
-    for t in tr_p:
-        wg_adresu_p.setdefault(t["email"].strip(), []).append(t)
-    for adres, lista in wg_adresu_p.items():
-        try:
-            _wyslij_temat(adres, _tresc_maila_przedmioty(lista),
-                          f"[Skaner Doradca] Monitoring przedmiotów: {len(lista)} nowych trafień")
-            _oznacz_wyslane_przedmioty(db, lista)
-            print(f"[monitoring] Przedmioty → {adres}: {len(lista)} trafień.")
-        except SystemExit:
-            raise
-        except Exception as e:
-            print(f"[monitoring] BŁĄD wysyłki (przedmioty) na {adres}: {e}")
+    _obsluz_kanal(
+        db, tr_p, "sub_przedmiot",
+        "Nowe interpretacje z obserwowanych obszarów", "Przedmiot",
+        "[Skaner Doradca] Monitoring przedmiotów: {ile} nowych trafień",
+        "Wiadomość wygenerowana automatycznie. Obszary zarządzasz w aplikacji, "
+        "moduł „Monitoring Przedmiotów”.",
+        _oznacz_wyslane_przedmioty, "Przedmioty")
 
     if not trafienia and not tr_b and not tr_p:
         print("[monitoring] Nic do wysłania.")
