@@ -1,22 +1,28 @@
+import importlib
+
 import streamlit as st
 import time
 
 import paleta
 
-# Zaladowanie wszystkich Twoich odseparowanych plikow
-import cfo_analyzer
-import raporty
-import eksplorator_archiwum
-import eksplorator_wyrokow
-import zestawienie_tygodniowe
-import zestawienie_automat
-import monitoring_ui
-import ustawienia_systemu
-import wyszukiwarka_klasyfikacji
-import uzupelnij_klasyfikacje
-import panel_uzytkownika
-import aktywnosc_systemu
+# Moduly funkcjonalne NIE sa importowane tutaj. Wczesniej wszystkie jedenascie
+# ladowalo sie na starcie, ciagnac ze soba pandas, yfinance, reportlab i lxml —
+# takze wtedy, gdy uzytkownik wchodzil tylko do Archiwum. Cold start po
+# uspieniu aplikacji trwal przez to kilkanascie sekund.
+#
+# Teraz modul laduje sie dopiero, gdy jest wybrany w menu. Python trzyma juz
+# raz zaimportowany modul w sys.modules, wiec kolejne wejscia sa darmowe —
+# koszt placi sie raz, i tylko za to, z czego naprawde korzystasz.
 import auth
+
+
+def _modul(nazwa: str):
+    """Import na zadanie. Blad importu pokazujemy wprost zamiast bialej strony."""
+    try:
+        return importlib.import_module(nazwa)
+    except Exception as e:
+        st.error(f"Nie udało się załadować modułu „{nazwa}”: {e}")
+        st.stop()
 
 # Logo dolaczone bezposrednio w kodzie (base64) - dziala niezaleznie od
 # tego, gdzie i jak jest hostowana aplikacja, bez osobnego pliku obrazka.
@@ -63,6 +69,8 @@ st.set_page_config(page_title=paleta.NAZWA_MARKI, page_icon="📗", layout="wide
 import hmac
 import time as _time
 
+import sesja as _sesja
+
 for _k, _v in {"authenticated": False, "rola": None, "user_email": None,
                "superadmin": False, "proby_logowania": 0}.items():
     if _k not in st.session_state:
@@ -81,6 +89,43 @@ try:
     _tabela_kont_gotowa()
 except Exception:
     pass
+
+
+def _odtworz_z_ciasteczka() -> None:
+    """Przywraca sesję po odświeżeniu strony, o ile ciasteczko jest ważne.
+
+    Uprawnienia czytamy Z BAZY, a nie z tokenu. Token mówi tylko „to ten
+    użytkownik” — rola i status muszą pochodzić ze świeżego odczytu, inaczej
+    odebranie komuś uprawnień albo dezaktywacja konta nie zadziałałyby, dopóki
+    nie wygaśnie ciasteczko.
+    """
+    if st.session_state["authenticated"]:
+        return
+    email = _sesja.odczytaj_email()
+    if not email:
+        return
+
+    if email == "DORADCA":
+        st.session_state.update(authenticated=True, rola="admin",
+                                user_email="DORADCA", superadmin=True,
+                                proby_logowania=0)
+        return
+
+    try:
+        u = auth.pobierz_uzytkownika(email)
+    except Exception:
+        return
+    if not u or u.get("status") != "aktywne":
+        # Konto zniknęło albo zostało zablokowane — ciasteczko jest bezużyteczne.
+        _sesja.wyczysc_sesje()
+        return
+    st.session_state.update(authenticated=True, rola=u["rola"],
+                            user_email=email,
+                            superadmin=u["rola"] == "admin",
+                            proby_logowania=0)
+
+
+_odtworz_z_ciasteczka()
 
 
 def _zaloguj_doradca(login: str, haslo: str) -> bool:
@@ -110,6 +155,12 @@ if not st.session_state['authenticated']:
                        "@doradca.lublin.pl.")
             username = st.text_input("Login / adres e-mail:", key="log_user")
             password = st.text_input("Hasło:", type="password", key="log_pass")
+            zapamietaj = st.checkbox(
+                "Nie wylogowuj mnie", key="log_zapamietaj",
+                help=f"Zaznaczone: pozostajesz zalogowany przez "
+                     f"{_sesja.DNI_DLUGIE} dni, także po zamknięciu "
+                     f"przeglądarki. Odznaczone: odświeżenie strony nie "
+                     f"wylogowuje, ale zamknięcie przeglądarki tak.")
 
             if st.button("🚀 Zaloguj się", type="primary",
                          use_container_width=True, key="log_btn"):
@@ -118,6 +169,7 @@ if not st.session_state['authenticated']:
 
                 # 1) konto zaszyte DORADCA (niezależne od bazy)
                 if _zaloguj_doradca(username.strip(), password):
+                    _sesja.zapisz_sesje("DORADCA", zapamietaj)
                     st.rerun()
                 else:
                     # 2) konto bazodanowe (@doradca.lublin.pl)
@@ -131,6 +183,7 @@ if not st.session_state['authenticated']:
                             authenticated=True, rola=sesja["rola"],
                             user_email=sesja["email"],
                             superadmin=sesja["superadmin"], proby_logowania=0)
+                        _sesja.zapisz_sesje(sesja["email"], zapamietaj)
                         st.rerun()
                     else:
                         st.session_state['proby_logowania'] += 1
@@ -181,16 +234,23 @@ _MODULY = [
     ("9", "Aktywność systemu"),
     ("10", "Mój panel"),
     ("11", "Ustawienia Systemu"),
-    ("12", "Uzupełnianie klasyfikacji"),
 ]
 
 # Pozycje bez uprawnien: kłódka + wyszarzenie (są widoczne, ale wejście do
 # nich jest zablokowane także w routingu — dwie warstwy zabezpieczenia).
 # Odznaka „nowe” przy module „Mój panel” — liczba trafień od ostatniej wizyty.
-try:
-    _nowych = panel_uzytkownika.liczba_nowych(st.session_state.get("user_email") or "DORADCA")
-except Exception:
-    _nowych = 0
+#
+# Liczymy ją tylko wtedy, gdy moduł „Mój panel” jest w ogóle dostępny, i to
+# leniwie: wcześniej `panel_uzytkownika` importował się na starcie WYŁĄCZNIE
+# po to, żeby policzyć tę jedną liczbę przy każdym przeładowaniu strony,
+# niezależnie od tego, w którym module byłeś.
+_nowych = 0
+if auth.ma_dostep(_ROLA, "10"):
+    try:
+        _nowych = _modul("panel_uzytkownika").liczba_nowych(
+            st.session_state.get("user_email") or "DORADCA")
+    except Exception:
+        _nowych = 0
 
 _pozycje, _dozwolone_idx = [], []
 for _i, (_num, _nazwa) in enumerate(_MODULY):
@@ -214,6 +274,9 @@ st.sidebar.markdown("---")
 _rola_opis = "Administrator" if _ROLA == "admin" else "Użytkownik"
 st.sidebar.caption(f"Zalogowano: {st.session_state.get('user_email')} · {_rola_opis}")
 if st.sidebar.button("🚪 Wyloguj się", use_container_width=True):
+    # Ciasteczko musi zniknąć razem ze stanem sesji — inaczej odświeżenie
+    # strony zalogowałoby z powrotem tego samego użytkownika.
+    _sesja.wyczysc_sesje()
     st.session_state.update(authenticated=False, rola=None, user_email=None,
                             superadmin=False)
     st.rerun()
@@ -222,7 +285,7 @@ st.sidebar.caption(f"© 2026 {paleta.NAZWA_MARKI}")
 
 # Powiadomienie o dzisiejszej aktywności — dymek raz na sesję.
 try:
-    aktywnosc_systemu.toast_dzis()
+    _modul("aktywnosc_systemu").toast_dzis()
 except Exception:
     pass
 
@@ -235,27 +298,23 @@ if not auth.ma_dostep(_ROLA, _wybrany_num):
     )
     st.stop()
 
-if _wybrany_num == "1":
-    raporty.run_module()
-elif _wybrany_num == "2":
-    eksplorator_archiwum.run_module()
-elif _wybrany_num == "3":
-    cfo_analyzer.run_module()
-elif _wybrany_num == "4":
-    eksplorator_wyrokow.run_module()
-elif _wybrany_num == "5":
-    zestawienie_tygodniowe.pokaz_zestawienie_tygodniowe()
-elif _wybrany_num == "6":
-    zestawienie_automat.pokaz_zestawienie_automat()
-elif _wybrany_num == "7":
-    monitoring_ui.pokaz_monitoring()
-elif _wybrany_num == "8":
-    wyszukiwarka_klasyfikacji.pokaz_wyszukiwarke()
-elif _wybrany_num == "9":
-    aktywnosc_systemu.pokaz_aktywnosc()
-elif _wybrany_num == "10":
-    panel_uzytkownika.pokaz_panel()
-elif _wybrany_num == "11":
-    ustawienia_systemu.pokaz_ustawienia()
-elif _wybrany_num == "12":
-    uzupelnij_klasyfikacje.pokaz_uzupelnianie()
+# Mapa: numer modułu -> (nazwa pliku, nazwa funkcji wejściowej). Import
+# dzieje się dopiero tutaj, dla JEDNEGO wybranego modułu.
+_WEJSCIA = {
+    "1":  ("raporty", "run_module"),
+    "2":  ("eksplorator_archiwum", "run_module"),
+    "3":  ("cfo_analyzer", "run_module"),
+    "4":  ("eksplorator_wyrokow", "run_module"),
+    "5":  ("zestawienie_tygodniowe", "pokaz_zestawienie_tygodniowe"),
+    "6":  ("zestawienie_automat", "pokaz_zestawienie_automat"),
+    "7":  ("monitoring_ui", "pokaz_monitoring"),
+    "8":  ("wyszukiwarka_klasyfikacji", "pokaz_wyszukiwarke"),
+    "9":  ("aktywnosc_systemu", "pokaz_aktywnosc"),
+    "10": ("panel_uzytkownika", "pokaz_panel"),
+    "11": ("ustawienia_systemu", "pokaz_ustawienia"),
+}
+
+_wejscie = _WEJSCIA.get(_wybrany_num)
+if _wejscie:
+    _nazwa_pliku, _funkcja = _wejscie
+    getattr(_modul(_nazwa_pliku), _funkcja)()

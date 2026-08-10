@@ -36,7 +36,10 @@ def parametry_z_url(url: str) -> dict:
         host, port = host_port.rsplit(":", 1)
         port = int(port)
     else:
-        host, port = host_port, 6543
+        # 5432 = session pooler. Adres bez portu zdarza sie w recznie wpisanym
+        # SUPABASE_DB_URL; domyslny 6543 (transaction pooler) nie utrzymuje
+        # stanu sesji, co przy puli polaczen jest zla domyslna.
+        host, port = host_port, 5432
     return {
         "host": host, "port": port, "dbname": dbname,
         "user": user, "password": password,
@@ -47,8 +50,40 @@ def parametry_z_url(url: str) -> dict:
 class SupabaseDB:
     """
     Klasa opakowujaca polaczenia z Supabase.
-    Tworzy NOWE polaczenie przy kazdym zapytaniu (wymagane przez pooler).
+
+    PULA POLACZEN
+    -------------
+    Wczesniej kazde zapytanie otwieralo NOWE polaczenie i zamykalo je
+    w bloku finally. Przy Supabase po SSL jeden handshake to realnie
+    150-400 ms, wiec zakladka wykonujaca osiem zapytan traci kilka sekund
+    na samo laczenie sie, zanim baza cokolwiek policzy. Streamlit przelicza
+    caly skrypt przy KAZDEJ interakcji, wiec ten koszt wracal bez przerwy.
+
+    Teraz polaczenia sa trzymane w puli i oddawane po zapytaniu. Zysk jest
+    najwiekszy tam, gdzie zapytan jest duzo — czyli w modulach UI.
+
+    DLACZEGO PULA, A NIE JEDNO POLACZENIE W cache_resource
+    ------------------------------------------------------
+    psycopg2 nie jest bezpieczny watkowo w obrebie jednego polaczenia,
+    a Streamlit obsluguje sesje w osobnych watkach. Jedno wspoldzielone
+    polaczenie dawaloby przeplatane kursory i bledy trudne do odtworzenia.
+    ThreadedConnectionPool wydaje kazdemu watkowi wlasne polaczenie.
+
+    ODPORNOSC NA ZERWANE POLACZENIA
+    -------------------------------
+    Streamlit Cloud usypia aplikacje, a Supabase zamyka bezczynne polaczenia.
+    Polaczenie wyjete z puli po takiej przerwie jest martwe. Dlatego kazde
+    zapytanie ma JEDNA automatyczna powtorke: przy bledzie polaczenia pula
+    jest kasowana i zapytanie idzie jeszcze raz na swiezym polaczeniu.
+    Powtarzamy tylko bledy POLACZENIA — blad SQL leci do gory od razu,
+    bo powtarzanie go nic nie da.
     """
+
+    # Rozmiar puli. Streamlit Cloud to jeden proces, a rownoleglych sesji
+    # jest niewiele — pula ponad kilka polaczen tylko zjadalaby limit
+    # poolera Supabase, ktory jest wspolny dla wszystkich klientow projektu.
+    PULA_MIN = 1
+    PULA_MAKS = 6
 
     def __init__(self, parametry: dict):
         """
@@ -60,57 +95,123 @@ class SupabaseDB:
         else:
             self._params = {
                 "host":     parametry["host"],
-                "port":     int(parametry.get("port", 6543)),
+                # Domyslnie 5432 (session pooler). Transaction pooler na 6543
+                # nie utrzymuje stanu sesji miedzy zapytaniami, wiec przy puli
+                # dawalby trudne do wysledzenia niespodzianki.
+                "port":     int(parametry.get("port", 5432)),
                 "dbname":   parametry.get("database", "postgres"),
                 "user":     parametry["user"],
                 "password": parametry["password"],
                 "sslmode":  "require",
                 "connect_timeout": 15,
             }
+        # Wykrywanie zerwanych polaczen po stronie TCP. Bez tego martwe
+        # polaczenie ujawnia sie dopiero przy zapytaniu, po dlugim czekaniu.
+        self._params.setdefault("keepalives", 1)
+        self._params.setdefault("keepalives_idle", 30)
+        self._params.setdefault("keepalives_interval", 10)
+        self._params.setdefault("keepalives_count", 3)
+
+        self._pula = None
+        self._pula_lock = threading.Lock()
+
+    # -- pula ---------------------------------------------------------------
+    def _pula_gotowa(self):
+        """Zwraca pule, tworzac ja przy pierwszym uzyciu (leniwie, zeby samo
+        utworzenie obiektu SupabaseDB nie wymagalo dostepnej bazy)."""
+        if self._pula is None:
+            with self._pula_lock:
+                if self._pula is None:
+                    from psycopg2 import pool as _pool
+                    self._pula = _pool.ThreadedConnectionPool(
+                        self.PULA_MIN, self.PULA_MAKS, **self._params)
+        return self._pula
+
+    def _skasuj_pule(self):
+        """Zamyka i porzuca cala pule — uzywane po wykryciu martwych polaczen."""
+        with self._pula_lock:
+            stara, self._pula = self._pula, None
+        if stara is not None:
+            try:
+                stara.closeall()
+            except Exception:
+                pass
+
+    def zamknij(self):
+        """Jawne zwolnienie zasobow. Skrypty wsadowe moga wywolac na koncu;
+        w Streamlit nie jest potrzebne (proces zyje razem z aplikacja)."""
+        self._skasuj_pule()
 
     def _polacz(self):
+        """Zgodnosc wstecz — pojedyncze polaczenie poza pula."""
         import psycopg2
         conn = psycopg2.connect(**self._params)
         conn.autocommit = False
         return conn
 
+    def _z_pula(self, operacja):
+        """Wykonuje `operacja(conn)` na polaczeniu z puli, z jedna powtorka
+        przy bledzie polaczenia."""
+        import psycopg2
+        for proba in (1, 2):
+            pula = self._pula_gotowa()
+            conn = None
+            try:
+                conn = pula.getconn()
+                try:
+                    wynik = operacja(conn)
+                    conn.commit()
+                    return wynik
+                except Exception:
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+                    raise
+            except (psycopg2.OperationalError, psycopg2.InterfaceError):
+                # Polaczenie martwe albo pula rozjechana po uspieniu aplikacji.
+                if conn is not None:
+                    try:
+                        pula.putconn(conn, close=True)
+                    except Exception:
+                        pass
+                    conn = None
+                self._skasuj_pule()
+                if proba == 2:
+                    raise
+            finally:
+                if conn is not None:
+                    try:
+                        pula.putconn(conn)
+                    except Exception:
+                        pass
+
     def wykonaj(self, sql: str, params=None, fetch: bool = False):
-        """Wykonuje pojedyncze zapytanie na nowym polaczeniu."""
+        """Wykonuje pojedyncze zapytanie na polaczeniu z puli."""
         import psycopg2.extras
-        conn = self._polacz()
-        try:
+
+        def operacja(conn):
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 cur.execute(sql, params)
                 if fetch:
-                    wynik = [dict(r) for r in cur.fetchall()]
-                    conn.commit()
-                    return wynik
-                n = cur.rowcount
-            conn.commit()
-            return n
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
+                    return [dict(r) for r in cur.fetchall()]
+                return cur.rowcount
+
+        return self._z_pula(operacja)
 
     def wykonaj_wiele(self, sql_z_values: str, dane: list) -> int:
         """INSERT ... VALUES %s przez execute_values."""
         if not dane:
             return 0
         import psycopg2.extras
-        conn = self._polacz()
-        try:
+
+        def operacja(conn):
             with conn.cursor() as cur:
-                psycopg2.extras.execute_values(cur, sql_z_values, dane, page_size=100)
-                n = cur.rowcount
-            conn.commit()
-            return n
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
+                psycopg2.extras.execute_values(cur, sql_z_values, dane,
+                                               page_size=100)
+                return cur.rowcount
+
+        return self._z_pula(operacja)
 
     def inicjalizuj_schemat(self):
         """Tworzy wszystkie wymagane tabele jesli nie istnieja."""
@@ -184,11 +285,12 @@ def zapisz_wiele_do_archiwum(db: SupabaseDB, rekordy: list, pobrano_kto: str = "
     return db.wykonaj_wiele(sql, dane)
 
 
-def _warunki_archiwum(podatek=None, rok=None, miesiac=None,
-                      data_od=None, data_do=None) -> tuple[str, list]:
-    """Wspólny fragment WHERE dla zapytań o archiwum. Wydzielony, żeby licznik
-    i pobranie rekordów NIGDY się nie rozjechały — inaczej weryfikacja
-    kompletności porównywałaby dwa różne zbiory."""
+def pobierz_rekordy_z_archiwum(db: SupabaseDB, podatek=None, rok=None, miesiac=None,
+                                  data_od=None, data_do=None) -> list:
+    """
+    Pobiera rekordy z opcjonalnym filtrowaniem.
+    data_od/data_do: stringi YYYY-MM-DD do filtrowania zakresu dat.
+    """
     kl, pa = [], []
     if podatek:
         kl.append("podatek = %s"); pa.append(podatek)
@@ -199,50 +301,8 @@ def _warunki_archiwum(podatek=None, rok=None, miesiac=None,
     elif rok:
         kl.append("data_wyd LIKE %s"); pa.append(f"{rok}%")
     where = f"WHERE {' AND '.join(kl)}" if kl else ""
-    return where, pa
-
-
-def policz_rekordy_w_archiwum(db: SupabaseDB, podatek=None, rok=None,
-                              miesiac=None, data_od=None, data_do=None) -> int:
-    """
-    Sama LICZBA dokumentów spełniających kryteria — bez pobierania czegokolwiek.
-
-    DLACZEGO ISTNIEJE (egress)
-      Weryfikacja kompletności w raport_silnik potrzebowała wyłącznie
-      len(rekordy), a wołała pobierz_rekordy_z_archiwum() — czyli ściągała
-      PEŁNE TEKSTY wszystkich interpretacji z okresu, i to raz na każdą próbę
-      douzupełnienia. Przy kilkuset dokumentach to dziesiątki megabajtów
-      transferu po to, żeby policzyć wiersze. Ta funkcja robi to samo
-      za kilkadziesiąt bajtów.
-    """
-    where, pa = _warunki_archiwum(podatek, rok, miesiac, data_od, data_do)
-    rows = db.wykonaj(f"SELECT COUNT(*) AS n FROM dokumenty {where}",
-                      pa if pa else None, fetch=True)
-    return int(rows[0]["n"]) if rows else 0
-
-
-def pobierz_rekordy_z_archiwum(db: SupabaseDB, podatek=None, rok=None, miesiac=None,
-                                  data_od=None, data_do=None,
-                                  z_tekstem: bool = False) -> list:
-    """
-    Pobiera rekordy z opcjonalnym filtrowaniem.
-    data_od/data_do: stringi YYYY-MM-DD do filtrowania zakresu dat.
-
-    z_tekstem — czy dociągnąć kolumnę `tekst` (pełna treść interpretacji).
-
-    UWAGA: domyślnie False, czyli ODWROTNIE niż dawne zachowanie (`SELECT *`
-    zawsze ciągnął tekst). Zmiana jest celowa: tekst jest potrzebny wyłącznie
-    przy budowaniu dokumentu Word, a wołaczy tej funkcji było kilku i większość
-    z nich tekstu nie używała wcale. Domyślne „nie” sprawia, że nowy wołacz
-    musi świadomie poprosić o transfer, zamiast dostać go po cichu.
-    """
-    where, pa = _warunki_archiwum(podatek, rok, miesiac, data_od, data_do)
-    kolumny = "id, sygnatura, podatek, data_wyd, link, format_zr, pobrano_dt"
-    if z_tekstem:
-        kolumny += ", tekst"
-    rows = db.wykonaj(
-        f"SELECT {kolumny} FROM dokumenty {where} ORDER BY data_wyd DESC",
-        pa if pa else None, fetch=True)
+    rows = db.wykonaj(f"SELECT * FROM dokumenty {where} ORDER BY data_wyd DESC",
+                       pa if pa else None, fetch=True)
     return [_row_do_rekordu(r) for r in rows]
 
 
