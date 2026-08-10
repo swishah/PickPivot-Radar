@@ -52,7 +52,7 @@ import paleta
 import eksplorator_archiwum as _archiwum_ui
 
 
-PODATKI = ["PIT", "CIT", "VAT", "AKCYZA", "PCC"]
+PODATKI = ["PIT", "CIT", "VAT", "AKCYZA"]
 
 
 def _fonty() -> tuple[str, str, bool]:
@@ -146,7 +146,8 @@ def generuj(rekordy: list[dict], pon: dt.date, *,
     Buduje PDF zestawienia tygodniowego.
 
     rekordy: słowniki z kluczami sygnatura, podatek, data_wyd, pobrano_at,
-             temat, streszczenie, streszczenie_pelne, zrodlo, link
+             temat, streszczenie, streszczenie_pelne, zrodlo, link,
+             branze, przedmiot
     z_pelnymi: czy dołączyć pełne streszczenia (znacznie grubszy dokument)
     podatek: gdy podany, tytuł mówi wprost o jednym podatku i pomijamy
              nagłówki sekcji — przy jednorodnej liście byłyby zbędne
@@ -185,6 +186,14 @@ def generuj(rekordy: list[dict], pon: dt.date, *,
     s_temat = ParagraphStyle("Temat", fontName=pogrubiony, fontSize=9.5,
                              textColor=colors.HexColor(p["text"]),
                              spaceAfter=4, leading=13)
+    # Klasyfikacja stoi NAD tematem, nie w linii meta z datami. Powód: to
+    # informacja merytoryczna („czego dotyczy"), a nie techniczna („kiedy
+    # wpadło"). Wrzucona między daty ginie; postawiona nad tematem czyta się
+    # jako etykieta całej pozycji i pozwala przejrzeć zestawienie po obszarach
+    # bez czytania streszczeń.
+    s_klasyfikacja = ParagraphStyle("Klasyfikacja", fontName=pogrubiony,
+                                    fontSize=8, textColor=akcent,
+                                    spaceBefore=2, spaceAfter=3, leading=11)
     s_tresc = ParagraphStyle("Tresc", fontName=regularny, fontSize=9.3,
                              leading=13.5, spaceAfter=6, alignment=4,
                              textColor=colors.HexColor(p["text"]))
@@ -243,6 +252,10 @@ def generuj(rekordy: list[dict], pon: dt.date, *,
                 styl = s_meta_uwaga if _publikacja_opozniona(r, pon) else s_meta
                 e.append(Paragraph(" · ".join(meta), styl))
 
+                klasyfikacja = _linia_klasyfikacji(r)
+                if klasyfikacja:
+                    e.append(Paragraph(klasyfikacja, s_klasyfikacja))
+
                 if r.get("temat"):
                     e.append(Paragraph(str(r["temat"]), s_temat))
 
@@ -274,6 +287,33 @@ def generuj(rekordy: list[dict], pon: dt.date, *,
 
     doc.build(e)
     return bufor.getvalue()
+
+
+def _linia_klasyfikacji(rekord: dict) -> str:
+    """Linia „Branża · Przedmiot” nad tematem. Pusta, gdy brak obu wartości.
+
+    Pokazujemy to, co jest — jedna z wartości potrafi być pusta, bo GPT gubi
+    klasyfikację przy dłuższych sesjach. Wypisanie samej dostępnej połowy jest
+    użyteczniejsze niż ukrycie całej linii albo drukowanie myślnika w miejscu
+    brakującej wartości.
+
+    Branż bywa kilka (rozdzielone przecinkiem), przedmiot jest jeden —
+    obie wartości wchodzą tu w tej postaci, w jakiej stoją w bazie.
+    """
+    czesci = []
+    branze = (rekord.get("branze") or "").strip()
+    przedmiot = (rekord.get("przedmiot") or "").strip()
+    if branze:
+        czesci.append(branze)
+    if przedmiot:
+        czesci.append(przedmiot)
+    if not czesci:
+        return ""
+    # Eskejpowanie takie samo jak w _na_akapity — wartości pochodzą z taksonomii,
+    # ale zakładanie, że nigdy nie zawierają & ani <, jest proszeniem się
+    # o rozsypany PDF przy pierwszej nietypowej pozycji.
+    return " · ".join(czesci).replace("&", "&amp;") \
+                             .replace("<", "&lt;").replace(">", "&gt;")
 
 
 def _publikacja_opozniona(rekord: dict, pon: dt.date) -> bool:
