@@ -242,14 +242,24 @@ _MODULY = [
     ("2", "Archiwum Interpretacji"),
     ("3", "Analiza Wskaźnikowa"),
     ("4", "Wyroki Sądów (WSA/NSA)"),
-    ("5", "Zestawienie Tygodniowe"),
-    ("6", "Zestawienie Tygodniowe Automat (próbna)"),
+    ("5", "Zestawienie Tygodniowe (poprzednie)"),
+    ("6", "Zestawienie Tygodniowe"),
     ("7", "Monitoring i Powiadomienia"),
     ("8", "Wyszukiwarka Interpretacji"),
     ("9", "Aktywność systemu"),
     ("10", "Mój panel"),
     ("11", "Ustawienia Systemu"),
 ]
+
+# Moduly czasowo wylaczone z menu. Kod i pliki ZOSTAJA nietkniete w repo —
+# zeby przywrocic pozycje, wystarczy usunac jej numer z tego zbioru.
+#
+# Modul 5 nosil wczesniej nazwe „Zestawienie Tygodniowe”, ktora przejal modul 6.
+# Zostawiam go w liscie pod nazwa z dopiskiem „(poprzednie)”, zeby po
+# ewentualnym przywroceniu nie bylo w menu dwoch identycznych pozycji —
+# st.sidebar.radio rozroznia wybory po TRESCI etykiety, wiec duplikat
+# gubilby zaznaczenie.
+UKRYTE_MODULY = {"1", "2", "3", "4", "5"}
 
 # Pozycje bez uprawnien: kłódka + wyszarzenie (są widoczne, ale wejście do
 # nich jest zablokowane także w routingu — dwie warstwy zabezpieczenia).
@@ -269,10 +279,12 @@ if auth.ma_dostep(_ROLA, "10"):
 
 _pozycje, _dozwolone_idx = [], []
 for _i, (_num, _nazwa) in enumerate(_MODULY):
+    if _num in UKRYTE_MODULY:
+        continue
     _odznaka = f"  🔴 {_nowych}" if (_num == "10" and _nowych) else ""
     if auth.ma_dostep(_ROLA, _num):
         _pozycje.append(f"{_num}. {_nazwa}{_odznaka}")
-        _dozwolone_idx.append(_i)
+        _dozwolone_idx.append(len(_pozycje) - 1)
     else:
         _pozycje.append(f"🔒 {_num}. {_nazwa}")
 
@@ -305,6 +317,15 @@ except Exception:
     pass
 
 # 4. Routing — z twardą blokadą dostępu (druga warstwa).
+if _wybrany_num in UKRYTE_MODULY:
+    # Nie da się tu trafić przez menu, ale zapamiętany wybór z wcześniejszej
+    # sesji mógłby wskazywać ukrytą pozycję. Lepszy jasny komunikat niż
+    # uruchomienie modułu, który miał być wyłączony.
+    st.title("Moduł niedostępny")
+    st.info("Ta sekcja jest chwilowo wyłączona. Wybierz inny moduł z menu "
+            "po lewej.")
+    st.stop()
+
 if not auth.ma_dostep(_ROLA, _wybrany_num):
     st.title("🔒 Brak uprawnień")
     st.warning(
