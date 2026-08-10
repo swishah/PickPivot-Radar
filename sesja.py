@@ -47,6 +47,7 @@ import base64
 import datetime as dt
 import hashlib
 import hmac
+import time as _time
 
 import streamlit as st
 
@@ -120,24 +121,91 @@ def _rozbierz_token(token: str) -> str | None:
 # ---------------------------------------------------------------------------
 # CIASTECZKA
 # ---------------------------------------------------------------------------
+# CookieManager to komponent FRONTENDOWY. Przy pierwszym przeliczeniu skryptu
+# nie jest jeszcze zamontowany, wiec odczyt zwraca None — nie dlatego, ze
+# ciasteczka nie ma, tylko dlatego, ze przegladarka nie zdazyla go odeslac.
+# Potraktowanie tego jako „brak sesji” konczy sie ekranem logowania mimo
+# waznego ciasteczka. Dlatego `przygotuj()` czeka na pierwszy odczyt i dopiero
+# potem pozwala ocenic, czy sesja istnieje.
+_KLUCZ_PROBY = "_sesja_proby_odczytu"
+_KLUCZ_GOTOWE = "_sesja_ciasteczka"
+_KLUCZ_BLAD = "_sesja_blad_importu"
+
+# Ile razy wolno przeladowac strone, czekajac na komponent. Limit jest po to,
+# zeby brak biblioteki albo zablokowane ciasteczka nie wpedzily aplikacji
+# w nieskonczona petle przeladowan.
+MAKS_PROB = 2
+
+
 def _menedzer():
     """Menedzer ciasteczek albo None, gdy biblioteki nie ma.
 
-    Brak biblioteki NIE moze wywalac aplikacji — wtedy po prostu nie ma
-    zapamietywania sesji, a logowanie dziala jak wczesniej.
+    Trzymany w st.session_state, NIE w cache_resource: cache_resource jest
+    wspolny dla wszystkich sesji, wiec jeden menedzer obslugiwalby ciasteczka
+    roznych uzytkownikow naraz.
     """
     if _KLUCZ_MENEDZERA in st.session_state:
         return st.session_state[_KLUCZ_MENEDZERA]
     try:
         import extra_streamlit_components as stx
-    except Exception:
+    except Exception as e:
         st.session_state[_KLUCZ_MENEDZERA] = None
+        st.session_state[_KLUCZ_BLAD] = str(e)
         return None
     # Staly klucz: komponent musi byc tym samym obiektem miedzy przeliczeniami,
     # inaczej Streamlit montuje go od nowa i ciasteczka gubia sie w locie.
     menedzer = stx.CookieManager(key="skaner_cookie_manager")
     st.session_state[_KLUCZ_MENEDZERA] = menedzer
     return menedzer
+
+
+def dostepne() -> bool:
+    """Czy zapamietywanie sesji w ogole dziala w tym srodowisku."""
+    return _menedzer() is not None
+
+
+def blad_importu() -> str:
+    """Tresc bledu importu biblioteki ciasteczek — pusta, gdy wszystko gra."""
+    return st.session_state.get(_KLUCZ_BLAD, "")
+
+
+def przygotuj() -> bool:
+    """Montuje komponent i czeka na pierwszy odczyt ciasteczek.
+
+    Zwraca True, gdy ciasteczka sa juz wczytane (albo gdy wiadomo, ze nie
+    beda — brak biblioteki, przekroczony limit prob). Wywolywac RAZ, na samym
+    poczatku app.py, przed bramka logowania.
+    """
+    menedzer = _menedzer()
+    if menedzer is None:
+        return True   # nie ma na co czekac
+
+    if _KLUCZ_GOTOWE in st.session_state:
+        return True
+
+    try:
+        ciasteczka = menedzer.get_all(key="sesja_get_all")
+    except Exception:
+        ciasteczka = None
+
+    if ciasteczka:
+        st.session_state[_KLUCZ_GOTOWE] = dict(ciasteczka)
+        return True
+
+    proby = st.session_state.get(_KLUCZ_PROBY, 0)
+    if proby >= MAKS_PROB:
+        # Komponent nie odesłał nic mimo kilku prob — albo ciasteczka nie ma,
+        # albo przegladarka je blokuje. Zapisujemy pusty stan i idziemy dalej,
+        # zeby nie zapetlic przeladowan.
+        st.session_state[_KLUCZ_GOTOWE] = {}
+        return True
+
+    st.session_state[_KLUCZ_PROBY] = proby + 1
+    # Krotka pauza daje przegladarce czas na odeslanie ciasteczek; bez niej
+    # przeladowanie wyprzedziloby odpowiedz komponentu i petla powtarzalaby sie
+    # az do wyczerpania limitu.
+    _time.sleep(0.35)
+    st.rerun()
 
 
 def zapisz_sesje(email: str, zapamietaj: bool) -> None:
@@ -154,16 +222,23 @@ def zapisz_sesje(email: str, zapamietaj: bool) -> None:
         # wazny bez konca, gdyby przegladarka go zachowala.
         wygasa = dt.datetime.now() + dt.timedelta(hours=12)
         expires_at = None
+    token = _zbuduj_token(email, wygasa)
     try:
-        menedzer.set(NAZWA_CIASTECZKA, _zbuduj_token(email, wygasa),
+        menedzer.set(NAZWA_CIASTECZKA, token,
                      expires_at=expires_at, key="sesja_set")
     except Exception:
-        pass
+        return
+    # Podreczna kopia: komponent zapisze ciasteczko dopiero po rundzie do
+    # przegladarki, a odczyt w tym samym przeliczeniu jeszcze go nie zobaczy.
+    st.session_state[_KLUCZ_GOTOWE] = dict(
+        st.session_state.get(_KLUCZ_GOTOWE) or {}, **{NAZWA_CIASTECZKA: token})
 
 
 def wyczysc_sesje() -> None:
     """Kasuje ciasteczko przy wylogowaniu."""
     menedzer = _menedzer()
+    st.session_state[_KLUCZ_GOTOWE] = {}
+    st.session_state[_KLUCZ_PROBY] = 0
     if menedzer is None:
         return
     try:
@@ -173,14 +248,21 @@ def wyczysc_sesje() -> None:
 
 
 def odczytaj_email() -> str | None:
-    """E-mail z waznego ciasteczka albo None."""
-    menedzer = _menedzer()
-    if menedzer is None:
-        return None
-    try:
-        token = menedzer.get(NAZWA_CIASTECZKA)
-    except Exception:
-        return None
+    """E-mail z waznego ciasteczka albo None.
+
+    Czyta ze stanu przygotowanego przez `przygotuj()`, a nie bezposrednio
+    z komponentu — dzieki temu wynik jest ten sam przez cale przeliczenie.
+    """
+    ciasteczka = st.session_state.get(_KLUCZ_GOTOWE)
+    if ciasteczka is None:
+        menedzer = _menedzer()
+        if menedzer is None:
+            return None
+        try:
+            ciasteczka = menedzer.get_all(key="sesja_get_all_fallback") or {}
+        except Exception:
+            return None
+    token = ciasteczka.get(NAZWA_CIASTECZKA)
     if not token:
         return None
     return _rozbierz_token(str(token))

@@ -91,6 +91,12 @@ except Exception:
     pass
 
 
+# Komponent ciasteczek musi zdążyć odesłać dane, ZANIM zdecydujemy, czy
+# pokazać ekran logowania. Bez tego pierwszy przebieg skryptu widzi pustkę
+# i wyrzuca zalogowanego użytkownika mimo ważnego ciasteczka.
+_sesja.przygotuj()
+
+
 def _odtworz_z_ciasteczka() -> None:
     """Przywraca sesję po odświeżeniu strony, o ile ciasteczko jest ważne.
 
@@ -161,6 +167,15 @@ if not st.session_state['authenticated']:
                      f"{_sesja.DNI_DLUGIE} dni, także po zamknięciu "
                      f"przeglądarki. Odznaczone: odświeżenie strony nie "
                      f"wylogowuje, ale zamknięcie przeglądarki tak.")
+
+            # Cicha awaria zapamiętywania jest gorsza niż brak funkcji —
+            # wyglądałaby jak „znowu mnie wylogowało” bez żadnej wskazówki.
+            if not _sesja.dostepne():
+                st.warning(
+                    "Zapamiętywanie logowania jest niedostępne — brak "
+                    "biblioteki `extra-streamlit-components`. Dodaj ją do "
+                    "requirements.txt i przeładuj aplikację. "
+                    f"Szczegóły: {_sesja.blad_importu()}", icon="⚠️")
 
             if st.button("🚀 Zaloguj się", type="primary",
                          use_container_width=True, key="log_btn"):
