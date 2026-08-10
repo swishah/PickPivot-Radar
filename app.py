@@ -277,16 +277,28 @@ if auth.ma_dostep(_ROLA, "10"):
     except Exception:
         _nowych = 0
 
-_pozycje, _dozwolone_idx = [], []
-for _i, (_num, _nazwa) in enumerate(_MODULY):
+# Numeracja w menu jest CIAGLA i liczona od 1, niezaleznie od kluczy modulow.
+# Klucze ("6", "7", ...) zostaja bez zmian, bo po nich chodzi mapa uprawnien
+# (auth.UPRAWNIENIA) i routing — przenumerowanie ich oznaczaloby przepisanie
+# uprawnien przy kazdym ukryciu modulu.
+#
+# Dlatego numer widoczny w etykiecie sluzy WYLACZNIE do czytania. Wybor
+# rozstrzyga mapa etykieta -> klucz; wczesniej numer byl wycinany z etykiety,
+# co po przenumerowaniu wskazywaloby zupelnie inny modul.
+_pozycje, _dozwolone_idx, _etykieta_na_num = [], [], {}
+_licznik = 0
+for _num, _nazwa in _MODULY:
     if _num in UKRYTE_MODULY:
         continue
+    _licznik += 1
     _odznaka = f"  🔴 {_nowych}" if (_num == "10" and _nowych) else ""
     if auth.ma_dostep(_ROLA, _num):
-        _pozycje.append(f"{_num}. {_nazwa}{_odznaka}")
-        _dozwolone_idx.append(len(_pozycje) - 1)
+        _etykieta = f"{_licznik}. {_nazwa}{_odznaka}"
+        _dozwolone_idx.append(len(_pozycje))
     else:
-        _pozycje.append(f"🔒 {_num}. {_nazwa}")
+        _etykieta = f"🔒 {_licznik}. {_nazwa}"
+    _pozycje.append(_etykieta)
+    _etykieta_na_num[_etykieta] = _num
 
 # Domyslnie zaznacz pierwszy DOSTEPNY modul (user nie wyląduje na kłódce).
 _domyslny = _dozwolone_idx[0] if _dozwolone_idx else 0
@@ -294,8 +306,9 @@ _domyslny = _dozwolone_idx[0] if _dozwolone_idx else 0
 aktywna_zakladka = st.sidebar.radio(
     "Wybierz moduł:", _pozycje, index=_domyslny)
 
-# Numer wybranego modulu (ignorujac ewentualny prefiks kłódki).
-_wybrany_num = aktywna_zakladka.lstrip("🔒 ").split(".")[0].strip()
+# Klucz modulu z mapy — NIE z tresci etykiety. Etykieta pokazuje numer
+# porzadkowy (1, 2, 3...), ktory nie ma nic wspolnego z kluczem modulu.
+_wybrany_num = _etykieta_na_num.get(aktywna_zakladka, "")
 
 st.sidebar.markdown("---")
 _rola_opis = "Administrator" if _ROLA == "admin" else "Użytkownik"
