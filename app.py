@@ -249,7 +249,8 @@ _MODULY = [
     ("9", "Aktywność systemu"),
     ("10", "Mój panel"),
     ("11", "Ustawienia Systemu"),
-]    ("13", "Dostęp wtyczki"),
+    ("13", "Dostęp wtyczki"),
+]
 
 # Moduly czasowo wylaczone z menu. Kod i pliki ZOSTAJA nietkniete w repo —
 # zeby przywrocic pozycje, wystarczy usunac jej numer z tego zbioru.
