@@ -249,7 +249,7 @@ _MODULY = [
     ("9", "Aktywność systemu"),
     ("10", "Mój panel"),
     ("11", "Ustawienia Systemu"),
-]
+]    ("13", "Dostęp wtyczki"),
 
 # Moduly czasowo wylaczone z menu. Kod i pliki ZOSTAJA nietkniete w repo —
 # zeby przywrocic pozycje, wystarczy usunac jej numer z tego zbioru.
@@ -361,6 +361,7 @@ _WEJSCIA = {
     "9":  ("aktywnosc_systemu", "pokaz_aktywnosc"),
     "10": ("panel_uzytkownika", "pokaz_panel"),
     "11": ("ustawienia_systemu", "pokaz_ustawienia"),
+    "13": ("dostep_wtyczki", "pokaz_dostep_wtyczki"),
 }
 
 _wejscie = _WEJSCIA.get(_wybrany_num)
