@@ -45,6 +45,7 @@ UPRAWNIENIA = {
     "10": {"admin", "user"},            # Mój panel (wszyscy)
     "11": {"admin"},                    # Ustawienia Systemu
     "12": {"admin"},                    # Uzupełnianie klasyfikacji
+    "13": {"admin", "user"},
 }
 
 # Uprawnienia szczegółowe (nie-modułowe), sprawdzane wewnątrz modułów:
